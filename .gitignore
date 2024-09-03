@@ -54,3 +54,4 @@ out/
 **/benchmark
 **/input
 **/diff
+.*.swp

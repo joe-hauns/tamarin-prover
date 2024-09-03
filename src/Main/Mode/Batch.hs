@@ -10,7 +10,7 @@ module Main.Mode.Batch (
   ) where
 
 import Control.Applicative ((<|>))
-import Control.Monad (guard, (<=<))
+import Control.Monad (guard, (<=<), forM, forM_)
 import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Data.Bifunctor (bimap)
@@ -34,6 +34,7 @@ import Main.Console
 import Main.Environment
 import Main.TheoryLoader
 import Main.Utils
+import Main.Mode.Batch.ToSmtlib (toSmtlib)
 import Data.Label qualified as L
 import Data.Map qualified as M
 import Theory.Constraint.System.Dot
@@ -56,10 +57,23 @@ batchMode = tamarinMode
           { groupUnnamed =
               theoryLoadFlags ++
               -- [ flagNone ["html"] (addEmptyArg "html")
+              -- [ flagNone ["html"] (addEmptyArg "html")
+              -- [ flagNone ["html"] (addEmptyArg "html")
+              -- [ flagNone ["html"] (addEmptyArg "html")
+              --     "generate HTML visualization of proofs"
+              --     "generate HTML visualization of proofs"
+              --     "generate HTML visualization of proofs"
+              --     "generate HTML visualization of proofs"
+
+              
+              -- [ flagNone ["html"] (addEmptyArg "html")
               --     "generate HTML visualization of proofs"
 
               [ flagNone ["no-compress"] (addEmptyArg "noCompress")
                   "Do not use compressed sequent visualization"
+
+              , flagNone ["to-smtlib"] (addEmptyArg "toSmtlib")
+                  "Parse the input file and turn it into equivalent smtlib syntax."
 
               , flagNone ["parse-only"] (addEmptyArg "parseOnly")
                   "Just parse the input file and pretty print it as-is"
@@ -86,6 +100,25 @@ batchMode = tamarinMode
 run :: TamarinMode -> Arguments -> IO ()
 run thisMode as
   | null inFiles = helpAndExit thisMode (Just "no input files given")
+  | argExists "toSmtlib" as = either handleError pure <=< runExceptT $ do
+
+      forM_ inFiles (\inFile -> do
+        srcThy <- liftIO $ readFile  inFile
+        thy    <- loadTheory thyLoadOptions srcThy inFile
+        liftIO $ print thy
+        liftIO $ print $ toSmtlib thy
+        )
+
+      -- srcThys <- mapM (liftIO . readFile) inFiles
+      -- let src_f_s = zip srcThys inFiles
+      -- thys <- forM src_f_s (\(src, file) -> loadTheory thyLoadOptions src file) 
+      -- mapM_ (putStrLn . show) srcThys
+
+      -- res <- mapM (processThy "") inFiles
+      -- let (docs, docs2) = unzip res
+      --
+      -- mapM_ (putStrLn . renderDoc) docs2
+
   | argExists "parseOnly" as = do
       res <- mapM (processThy "") inFiles
       let (docs, _) = unzip res
@@ -120,6 +153,7 @@ run thisMode as
         putStrLn $ renderDoc $ ppSummary summary
 
   where
+    handleError e@(ParserError _) = die $ show e
     ppSummary summary = Pretty.vcat [ Pretty.text ""
                                     , Pretty.text $ replicate 78 '='
                                     , Pretty.text "summary of summaries:"
@@ -200,7 +234,7 @@ run thisMode as
       else do
         (report, thy') <- closeTheory versionData thyLoadOptions sig' thy
         _ <- liftIO $ bitraverse outputTraces (const $ return ()) thy'
-        
+
         pure $
           either (\t -> (prettyClosedTheory t,     ppWf report Pretty.$--$ prettyClosedSummary t))
                  (\d -> (prettyClosedDiffTheory d, ppWf report Pretty.$--$ prettyClosedDiffSummary d))
@@ -231,19 +265,19 @@ run thisMode as
         outputTraces :: ClosedTheory -> IO ()
         outputTraces thy = do
             let graphOptions = defaultGraphOptions
-                dotOptions = defaultDotOptions 
+                dotOptions = defaultDotOptions
                 serializeDot (label, system) = D.showDot label $ dotSystemCompact graphOptions dotOptions system
                 serializeJSON = sequentsToJSONPretty graphOptions
-                labelledSystems = map (\(lemma, proof, system) -> 
+                labelledSystems = map (\(lemma, proof, system) ->
                   let label = traceOutputLabel graphOptions dotOptions lemma proof in
                   (label, system)) systemsWithMetadata
 
             case findArg "traceDot" as of
-              Nothing -> pure () 
-              Just outfile -> 
+              Nothing -> pure ()
+              Just outfile ->
                 let serialized = intercalate "\n" $ map serializeDot labelledSystems in
                 writeFile outfile serialized
-                
+
             case findArg "traceJSON" as of
               Nothing -> pure ()
               Just outfile ->
@@ -262,18 +296,18 @@ run thisMode as
             -- path in the proof.
             proofSystems :: IncrementalProof -> [(ProofPath, System)]
             proofSystems (LNode (ProofStep Solved (Just rootSystem)) _) =  [([], rootSystem)]
-            proofSystems (LNode (ProofStep _ _) children) =  
-              [(l : ls, system) | (l, subProof) <- M.toList children 
+            proofSystems (LNode (ProofStep _ _) children) =
+              [(l : ls, system) | (l, subProof) <- M.toList children
                                 , (ls, system) <- proofSystems subProof ]
-            
+
             -- | Make a label for use in the trace output out of all relevant information for a constraint system.
             traceOutputLabel :: GraphOptions
                              -> DotOptions
-                             -> Lemma IncrementalProof 
+                             -> Lemma IncrementalProof
                              -> ProofPath
                              -> String
             traceOutputLabel graphOptions dotOptions lemma proofPath =
-              "trace_" 
+              "trace_"
               ++ L.get thyName thy                         -- Name of the theory in which the constraint system appears.
               ++ "_"
               ++ traceLabelOptions graphOptions dotOptions -- Graph options are included in a short format.
@@ -283,7 +317,7 @@ run thisMode as
 
             -- | Format the graph rendering options in a concise way.
             traceLabelOptions :: GraphOptions -> DotOptions -> String
-            traceLabelOptions graphOptions dotOptions = 
+            traceLabelOptions graphOptions dotOptions =
               let s1 = show $ L.get goSimplificationLevel graphOptions
                   s2 = if L.get goShowAutoSource graphOptions then "AS1" else "AS0"
                   s3 = if L.get goClustering graphOptions then "CL1" else "CL0"
