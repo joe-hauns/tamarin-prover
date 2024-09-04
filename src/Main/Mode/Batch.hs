@@ -34,7 +34,7 @@ import Main.Console
 import Main.Environment
 import Main.TheoryLoader
 import Main.Utils
-import Main.Mode.Batch.ToSmtlib (toSmtlib)
+import Main.Mode.Batch.ToSmtlib
 import Data.Label qualified as L
 import Data.Map qualified as M
 import Theory.Constraint.System.Dot
@@ -105,19 +105,38 @@ run thisMode as
       forM_ inFiles (\inFile -> do
         srcThy <- liftIO $ readFile  inFile
         thy    <- loadTheory thyLoadOptions srcThy inFile
-        liftIO $ print thy
-        liftIO $ print $ toSmtlib thy
+        case thy of 
+          Left t -> liftIO $ do
+            prt "Heuristic" $ _thyHeuristic t
+            prt "Tactic" $ _thyTactic t
+            prt "Cache" $ _thyCache t
+            prt "Options" $ _thyOptions t
+            prt "IsSapic" $ _thyIsSapic t
+            putStrLn ""
+            putStrLn "=================================================="
+            putStrLn ""
+            prt "Signature" $ _sigMaudeInfo $ _thySignature t
+            prt "Signature" $ stFunSyms $ _sigMaudeInfo $ _thySignature t
+            putStrLn ""
+            putStrLn "Items:" 
+            let items' =  [ i  | i <- _thyItems t
+                               , case i of 
+                                   TranslationItem (FunctionTypingInfo _) -> False
+                                   _ -> True
+                               ]
+            forM_ items' $ \item -> do
+              putStrLn $ "  " ++ (show item)
+            putStrLn ""
+            putStrLn "=================================================="
+            putStrLn ""
+            prt "toFolSignature" $ toFolSignature t
+            putStrLn ""
+            putStrLn ""
+            putStrLn ""
+            outputNice $ toFolSignature t
+              where prt s x = putStrLn $ s ++ ": " ++ show x
+          Right _diffThy -> error "translation of diff theory is not supported (yet)"
         )
-
-      -- srcThys <- mapM (liftIO . readFile) inFiles
-      -- let src_f_s = zip srcThys inFiles
-      -- thys <- forM src_f_s (\(src, file) -> loadTheory thyLoadOptions src file) 
-      -- mapM_ (putStrLn . show) srcThys
-
-      -- res <- mapM (processThy "") inFiles
-      -- let (docs, docs2) = unzip res
-      --
-      -- mapM_ (putStrLn . renderDoc) docs2
 
   | argExists "parseOnly" as = do
       res <- mapM (processThy "") inFiles
