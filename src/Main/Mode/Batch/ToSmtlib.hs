@@ -3,15 +3,15 @@
 module Main.Mode.Batch.ToSmtlib (
     toSmtlib
   , toFolSignature
+  , toFolProblem
   , Outputable(..)
   ) where
 
 import Items.OpenTheoryItem
 import TheoryObject
 import Theory.Model
-import Theory.Model.Atom (Unit2(..))
 import Data.Maybe
-import Data.List (intercalate)
+import Data.List (intercalate,genericIndex,intersperse)
 import Data.Functor
 import Data.ByteString.Char8 (unpack)
 import Theory
@@ -21,53 +21,61 @@ import Control.Monad
 data Smtlib = Smtlib
   deriving (Show)
 
-toSmtlib :: FolSignature temp -> Smtlib
+toSmtlib :: FolSignature -> Smtlib
 toSmtlib _ = Smtlib
 
 class Outputable a where
   outputNice :: a -> IO ()
 
-data FolSort temp = MsgSort
-                  | FactSort
-                  | Nat
-                  | Temp
-                  | BoolSort
-  deriving (Show)
-
-data FolFuncId temp = Cnt
-                  | Label
-                  | End
-                  | MsgSymbol FunSym
-                  | FactSymbol FactTag
+data FolSort = FolSortMsg
+             | FolSortFact
+             | FolSortNat
+             | FolSortTemp
+             | FolSortBool
   deriving (Show,Ord,Eq)
 
-data FolTerm = FolApp (FolFuncId TempNat) [FolTerm]
-  deriving (Show)
+data FolFuncId = Cnt
+               | FSEq FolSort
+               | FSLess
+               | Label
+               | End
+               | MsgSymbol FunSym
+               | FactSymbol FactTag
+  deriving (Show,Ord,Eq)
 
--- TODO get rid of temp
+data FolTerm = FolApp FolFuncId [FolTerm]
+             | FolVar String FolSort
+  deriving (Show)
 
 data FolFormula = 
     FolAtom FolTerm
   | FolBool !Bool
   | FolNot FolFormula
   | FolConn Connective FolFormula FolFormula
-  | FolQua !Quantifier String (FolSort TempNat) FolFormula
+  | FolQua !Quantifier String FolSort FolFormula
   deriving (Show)
 
-data FolProblem temp = FolProblem {
-    _fpSig     :: FolSignature temp
+data FolProblem = FolProblem {
+    _fpSig     :: FolSignature
   , _fpRules   :: [SupportedRule]
   , _fpFormula :: [FolGoal]
   }
   deriving (Show)
 
-data FolSignature temp = FolSignature {
-    _fsigSorts :: [ FolSort temp ]
-  , _fsigFuncs :: [ FolFuncId temp ]
+data FolSignature = FolSignature {
+    _fsigSorts :: [ FolSort ]
+  , _fsigFuncs :: [ FolFuncId ]
   }
   deriving (Show)
 
-instance Outputable (FolSignature temp) where
+sortName :: FolSort -> String 
+sortName FolSortMsg = "msg" 
+sortName FolSortFact = "fact"
+sortName FolSortNat = "nat"
+sortName FolSortTemp = "temp"
+sortName FolSortBool = "bool"
+
+instance Outputable FolSignature where
   outputNice (FolSignature sorts funcs) = do
     putStrLn "sorts: "
     forM_ sorts $ \s ->  do
@@ -76,16 +84,64 @@ instance Outputable (FolSignature temp) where
     putStrLn "funcs:"
     forM_ funcs $ \f ->  do
       putStrLn $ "  " ++ folFuncName f ++ ": " ++ ty (folFuncSig f)
-      where ty ([], r) = show r
-            ty ([a], r) = show a ++ " -> " ++ show r
-            ty (as, r) = "(" ++ intercalate ", " (show <$> as) ++ ") -> " ++ show r
+      where ty ([], r) = sortName r
+            ty ([a], r) = sortName a ++ " -> " ++ sortName r
+            ty (as, r) = "(" ++ intercalate ", " (sortName <$> as) ++ ") -> " ++ sortName r
 
 
-data TempQ = TempQ
-  deriving (Show)
+instance Outputable FolSort where
+  outputNice = putStr . sortName
 
-data TempNat = TempNat
-  deriving (Show)
+instance Outputable FolFuncId where
+  outputNice = putStr . folFuncName
+
+instance Outputable FolGoal where
+  outputNice (FolGoal name formula) = do 
+    putStr $ "goal " ++ name ++ ": "
+    outputNice formula
+
+instance Outputable FolProblem where
+  outputNice (FolProblem sig rules goals) = do 
+    outputNice sig
+    putStrLn ""
+    putStrLn ""
+    putStrLn ""
+    forM_ goals $ \goal -> do
+       outputNice goal
+       putStrLn ""
+
+instance Outputable FolTerm where
+  outputNice (FolVar v _) = putStr v
+  outputNice (FolApp f ts) = do 
+    outputNice f
+    putStr "("
+    let acts :: [IO ()] = (intersperse (putStr ",") (fmap outputNice ts))
+    forM_ acts id
+    putStr ")"
+
+instance Outputable FolFormula where
+  outputNice (FolAtom t) = outputNice t
+  outputNice (FolBool t) = putStr $ show t
+  outputNice (FolNot t) = putStr "~"
+  outputNice (FolConn c s t) = do 
+    putStr "(" 
+    outputNice s
+    putStr (case c of 
+      And -> " /\\ "
+      Or -> " \\/ "
+      Imp -> " -> "
+      Iff -> " <-> ")
+    outputNice t
+    putStr ")" 
+  outputNice (FolQua q v s f) = do
+    putStr (case q of 
+      All -> "∀"
+      Ex -> "∃")
+    putStr $ v ++ ": "
+    outputNice s
+    putStr "("
+    outputNice f
+    putStr ")"
 
 data SupportedRule = SupportedRule {
       _srName :: Maybe String
@@ -95,20 +151,24 @@ data SupportedRule = SupportedRule {
     }
     deriving (Show)
 
-folFuncSig :: FolFuncId temp -> ([FolSort temp], FolSort temp)
-folFuncSig Cnt = ([Temp, FactSort], Nat)
-folFuncSig Label = ([Temp, FactSort], BoolSort)
-folFuncSig End = ([Temp], BoolSort)
-folFuncSig (MsgSymbol (NoEq (_name, (arity, _priv, _constr)))) = ([MsgSort | _ <- [1..arity]], MsgSort)
-folFuncSig (MsgSymbol (AC _ac)) = ([MsgSort, MsgSort], MsgSort)
+folFuncSig :: FolFuncId -> ([FolSort], FolSort)
+folFuncSig Cnt = ([FolSortTemp, FolSortFact], FolSortNat)
+folFuncSig Label = ([FolSortTemp, FolSortFact], FolSortBool)
+folFuncSig End = ([FolSortTemp], FolSortBool)
+folFuncSig (MsgSymbol (NoEq (_name, (arity, _priv, _constr)))) = ([FolSortMsg | _ <- [1..arity]], FolSortMsg)
+folFuncSig (MsgSymbol (AC _ac)) = ([FolSortMsg, FolSortMsg], FolSortMsg)
 folFuncSig (MsgSymbol (C EMap)) = error "EMap message not supported (yet)"
 folFuncSig (MsgSymbol List) = error "List message not supported (yet)"
-folFuncSig (FactSymbol tag) = ([MsgSort | _ <- [1..factTagArity tag]], FactSort)
+folFuncSig (FactSymbol tag) = ([FolSortMsg | _ <- [1..factTagArity tag]], FolSortFact)
+folFuncSig (FSEq s) = ([s, s], FolSortBool)
+folFuncSig FSLess = ([FolSortTemp, FolSortTemp], FolSortBool)
 
-folFuncName :: FolFuncId temp -> String
+folFuncName :: FolFuncId -> String
 folFuncName Cnt = "cnt"
 folFuncName Label = "label"
 folFuncName End = "end"
+folFuncName (FSEq _srt) = "="
+folFuncName FSLess = "<"
 folFuncName (MsgSymbol (NoEq (name, (_arity, _priv, _constr)))) = unpack name
 folFuncName (MsgSymbol (AC ac)) = show ac
 folFuncName (MsgSymbol (C EMap)) = show EMap
@@ -165,10 +225,11 @@ getTag :: LNFact -> FactTag
 getTag (Fact tag factAnnotations _factTerms)
  | assertEmptyS factAnnotations "factAnnotations" = tag
 
-toFolSignature :: OpenTheory -> FolSignature TempNat
+toFolSignature :: OpenTheory -> FolSignature
 toFolSignature (Theory _name _inFile _heuristic _tactic signature _cache items _options _isSapic) = FolSignature {
-    _fsigSorts = [ MsgSort, FactSort, Nat, Temp, BoolSort]
-  , _fsigFuncs = [ Cnt, Label, End ]
+    _fsigSorts = sorts
+  , _fsigFuncs = [ Cnt, Label, End, FSLess ] 
+              ++ fmap FSEq sorts
               ++ fmap MsgSymbol (Data.Set.toList $ funSyms $ _sigMaudeInfo signature)
 
               ++ fmap FactSymbol (toList $ Data.Set.fromList (tags ++ [ FreshFact, OutFact, InFact, KUFact, KDFact, DedFact ]))
@@ -176,38 +237,67 @@ toFolSignature (Theory _name _inFile _heuristic _tactic signature _cache items _
  where tags = toFolRules items
           >>= (\(SupportedRule _name l p r) -> l ++ p ++ r)
           <&> getTag
+       sorts = [ FolSortMsg, FolSortFact, FolSortNat, FolSortTemp, FolSortBool]
 
 
-toFolProblem :: OpenTheory -> FolProblem TempNat
+toFolProblem :: OpenTheory -> FolProblem
 toFolProblem th = FolProblem (toFolSignature th) (toFolRules $ _thyItems th) (mapMaybe toFolGoal $ _thyItems th)
 
 data FolGoal = FolGoal String FolFormula 
   deriving (Show)
 
 toFolGoal :: OpenTheoryItem -> Maybe FolGoal
-toFolGoal (LemmaItem (Lemma name AllTraces formula _attributes _proof)) = Just (FolGoal name (toFolFormula formula))
+toFolGoal (LemmaItem (Lemma name AllTraces formula _attributes _proof)) = Just (FolGoal name (toFolFormula [] formula))
+toFolGoal _ = Nothing
 
-toFolFormula :: LNFormula -> FolFormula 
-toFolFormula (Ato a) = FolAtom (toFolAtom a)
-toFolFormula (TF x) = FolBool x
-toFolFormula (Not x) = FolNot (toFolFormula x)
-toFolFormula (Conn c l r) = FolConn c (toFolFormula l) (toFolFormula r)
-toFolFormula (Qua q (v,s) f) = FolQua q v (toFolSort s) (toFolFormula f)
-  where toFolSort LSortPub   = undefined
-        toFolSort LSortFresh = undefined
-        toFolSort LSortMsg =  MsgSort
-        toFolSort srt@LSortNode =  error $ "unexpected sort: " ++ show srt
-        toFolSort LSortNat =  Nat
+type QuantScope = [(String, FolSort)]
 
-toFolAtom :: ProtoAtom Unit2 (VTerm Name (BVar LVar)) -> FolTerm
-toFolAtom (Action term (Fact tag factAnnotations terms)) 
- | assertEmptyS factAnnotations "factAnnotations" = FolApp (FactSymbol tag) (toFolTerm <$> terms)
+toFolFormula :: QuantScope -> LNFormula -> FolFormula 
+toFolFormula qs (Ato a) = FolAtom (toFolAtom qs a)
+toFolFormula qs (TF x) = FolBool x
+toFolFormula qs (Not x) = FolNot (toFolFormula qs x)
+toFolFormula qs (Conn c l r) = FolConn c (toFolFormula qs l) (toFolFormula qs r)
+toFolFormula qs (Qua q (v,s) f) = FolQua q v s' (toFolFormula ((v, s'):qs) f)
+  where s' = toFolSort s
+
+toFolSort :: LSort -> FolSort
+toFolSort LSortPub   = undefined
+toFolSort LSortFresh = undefined
+toFolSort LSortMsg =  FolSortMsg
+toFolSort LSortNode = FolSortTemp
+toFolSort srt@LSortNat =  error $ "unexpected sort: " ++ show srt
+
+factT :: QuantScope -> Fact (VTerm Name (BVar LVar)) -> FolTerm
+factT qs (Fact tag factAnnotations terms) 
+ | assertEmptyS factAnnotations "factAnnotations" 
+   = FolApp (FactSymbol tag) (toFolTerm qs <$> terms)
  | otherwise = undefined
-toFolAtom (EqE s t) = undefined
-toFolAtom (Subterm s t) = undefined
-toFolAtom (Less s t) = undefined
-toFolAtom (Last t) = undefined
-toFolAtom (Syntactic s) = error $ "unexpected syntactic sugar: " ++ show s
 
-toFolTerm :: VTerm Name (BVar LVar) -> FolTerm
-toFolTerm = undefined
+sortOf :: FolTerm -> FolSort 
+sortOf (FolApp f _) = snd (folFuncSig f)
+sortOf (FolVar _ s) = s
+
+eqT :: FolTerm -> FolTerm -> FolTerm
+eqT l r = FolApp (FSEq (sortOf l)) [l, r]
+
+cntT :: FolTerm -> FolTerm -> FolTerm
+cntT l r = FolApp Cnt [l, r]
+
+labelT :: FolTerm -> FolTerm -> FolTerm
+labelT l r = FolApp Label [l, r]
+
+toFolAtom :: QuantScope -> ProtoAtom Unit2 (VTerm Name (BVar LVar)) -> FolTerm
+toFolAtom qs (Action term fact)  =
+       labelT (toFolTerm qs term) (factT qs fact)
+toFolAtom qs (EqE s t) = eqT (toFolTerm qs s) (toFolTerm qs t)
+toFolAtom qs (Less s t) = FolApp FSLess $ toFolTerm qs <$> [s,t]
+toFolAtom qs t@(Subterm _ _) = error $ "unsupported atom " ++ show t
+toFolAtom qs t@(Last _) = error $ "unsupported atom " ++ show t
+toFolAtom qs (Syntactic s) = error $ "unexpected syntactic sugar: " ++ show s
+
+toFolTerm :: QuantScope -> VTerm Name (BVar LVar) -> FolTerm
+toFolTerm qs (LIT (Con c)) = error $ "unexpected literal constant: " ++ show c
+toFolTerm qs (LIT (Var (Bound deBrujinIdx))) = FolVar v s
+     where (v, s) = qs `genericIndex` deBrujinIdx
+toFolTerm qs (LIT (Var (Free (LVar name sort _idx)))) = FolVar name (toFolSort sort)
+toFolTerm qs (FAPP f ts) = FolApp (MsgSymbol f) (toFolTerm qs <$> ts)

@@ -133,7 +133,7 @@ run thisMode as
             putStrLn ""
             putStrLn ""
             putStrLn ""
-            outputNice $ toFolSignature t
+            outputNice $ toFolProblem t
               where prt s x = putStrLn $ s ++ ": " ++ show x
           Right _diffThy -> error "translation of diff theory is not supported (yet)"
         )
