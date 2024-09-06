@@ -4,7 +4,6 @@ module Main.Mode.Batch.ToSmtlib (
     toSmtlib
   , toFolSignature
   , toFolProblem
-  , Outputable(..)
   , outputNice
   ) where
 
@@ -21,50 +20,11 @@ import Theory
 import Data.Set
 import Control.Monad
 
-
-data Output = Output {
-      _io       :: IO ()
-    , _ioIndent :: Int
-    }
-
-
-
--- oprint :: Output -> String -> Output 
--- oprint (Output io ind) s = (Output (io >> putStr s) ind + length s)
---
--- oprint :: Output -> String -> Output 
--- oprint (Output io ind) s = (Output (io >> putStr s) ind + length s)
-
--- (>>>) :: Output -> IO () -> Output 
--- (Output io ind) act 
-
--- instance Functor NiceIO where 
---   fmap f (NiceIO x y) = (NiceIO (fmap f x) y)
---
--- instance Applicative NiceIO where 
---   pure x = (NiceIO (return x) 0)
---   -- (<*>) :: NiceIO (a -> b) -> NiceIO a -> NiceIO b
---   -- (<*>) (NiceIO f i) (NiceIO a i') = (NiceIO (f <*> a) i + j)
---   liftA2 f (NiceIO l li) (NiceIO r ri) = undefined
---
---
--- bla :: NiceIO String = do 
---   return ""
---   return "bla"
-
--- instance Monad NiceIO where 
---   (>>=) (NiceIO x y) f = 
---       let x' = x >>= (\v -> _nio (f v))
---       in (NiceIO x' y)
-
 data Smtlib = Smtlib
   deriving (Show)
 
 toSmtlib :: FolSignature -> Smtlib
 toSmtlib _ = Smtlib
-
-class Outputable a where
-  oNice :: a -> IO ()
 
 data FolSort = FolSortMsg
              | FolSortNat
@@ -134,20 +94,6 @@ sortName FolSortRule = "rule"
 sortName FolSortLin = "lin"
 sortName FolSortPer = "per"
 sortName FolSortAct = "act"
-
-instance Outputable FolSignature where
-  oNice (FolSignature sorts funcs) = do
-    putStrLn "sorts: "
-    forM_ sorts $ \s ->  do
-      putStrLn $ "  " ++ show s
-    putStrLn ""
-    putStrLn "funcs:"
-    forM_ funcs $ \f ->  do
-      putStrLn $ "  " ++ folFuncName f ++ ": " ++ ty (folFuncSig f)
-      where ty ([], r) = sortName r
-            ty ([a], r) = sortName a ++ " -> " ++ sortName r
-            ty (as, r) = "(" ++ intercalate ", " (sortName <$> as) ++ ") -> " ++ sortName r
-
 
 class ToDoc a where
   toDoc :: a -> Doc
@@ -242,34 +188,6 @@ instance ToDoc FolProblem where
 
 outputNice :: ToDoc a => a -> IO ()
 outputNice = putStr . render . toDoc
-
-instance Outputable FolSort where
-  oNice = putStr . sortName
-
-instance Outputable FolFuncId where
-  oNice = putStr . folFuncName
-
-instance Outputable FolGoal where
-  oNice (FolGoal name formula) = do
-    putStr $ "goal " ++ name ++ ": "
-    oNice formula
-
-instance Outputable SupportedRule where
-  oNice (SupportedRule name ps as cs) = do
-    let name' = case name of Just n  -> " " ++ n ++ " "
-                             Nothing -> ""
-    putStr $  "rule" ++ name' ++ ": "
-    outputFacts ps
-    putStr  " --"
-    outputFacts as
-    putStr  "-> "
-    outputFacts cs
-      where outputFacts [] = putStr "[]"
-            outputFacts fs  = do
-              putStr "[ "
-              sequence_ $ intersperse (putStr ", ") (oNice . factT () <$> fs)
-              putStr " ]"
-
 
 timeVar :: FolTerm
 timeVar = FolVar ("__time__", FolSortTemp)
@@ -436,71 +354,6 @@ transitionRelation = allQ t $ mlDisj [ end, ruleTransition, freshness]
          addF x y = FolNatAdd $$$ [x, y]
 
 
-
-instance Outputable FolProblem where
-  oNice (FolProblem sig rules goals) = do
-    oNice sig
-    putStrLn ""
-    putStrLn ""
-    forM_ rules $ \rule -> do
-      oNice rule
-      putStrLn ""
-      putStr "  "
-      oNice (translateRule rule)
-      putStrLn ""
-      putStrLn ""
-    putStrLn ""
-    putStrLn ""
-    oNice transitionRelation
-    putStrLn ""
-    putStrLn ""
-    forM_ goals $ \goal -> do
-      oNice goal
-      putStrLn ""
-
-instance Outputable FolTerm where
-  oNice (FolVar (v, _)) = putStr v
-  oNice (FolApp f ts) = do
-    oNice f
-    putStr "("
-    sequence_ $ intersperse (putStr ",") (fmap oNice ts)
-    putStr ")"
-
-instance Outputable Connective where
-  oNice And = putStr "/\\"
-  oNice Or = putStr "\\/"
-  oNice Imp = putStr "->"
-  oNice Iff = putStr "<->"
-
-instance Outputable FolFormula where
-  oNice (FolAtom t) = oNice t
-  oNice (FolBool t) = putStr $ show t
-  oNice (FolNot t) = sequence_ [putStr "~", oNice t]
-  oNice (FolConnMultiline c fs) = do
-    putStr "("
-    sequence_ [ do oNice f; putStrLn "" | f <- fs]
-    putStr ")"
-    oNice c
-
-
-  oNice (FolConn c s t) = do
-    putStr "("
-    oNice s
-    putStr " "
-    oNice c
-    putStr " "
-    oNice t
-    putStr ")"
-
-  oNice (FolQua q (v, s) f) = do
-    putStr (case q of
-      All -> "∀"
-      Ex -> "∃")
-    putStr $ v ++ ": "
-    oNice s
-    putStr "("
-    oNice f
-    putStr ")"
 
 data SupportedRule = SupportedRule {
       _srName :: Maybe String
