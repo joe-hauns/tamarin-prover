@@ -143,6 +143,7 @@ executable tamarin-prover
       , http-types
       , mtl
       , parsec
+      , pretty
       , process
       , resourcet
       , safe
