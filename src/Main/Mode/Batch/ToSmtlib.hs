@@ -73,8 +73,7 @@ data FolFormula =
   deriving (Show)
 
 data FolProblem = FolProblem {
-    _fpSig     :: FolSignature
-  , _fpRules   :: [SupportedRule]
+    _fpRules   :: [SupportedRule]
   , _fpFormula :: [FolGoal]
   }
   deriving (Show)
@@ -155,9 +154,6 @@ instance ToDoc SupportedRule where
 
 
 
--- instance ToDoc FolSort where
---   toDoc = text . show
-
 instance ToDoc FolSignature where
   toDoc (FolSignature sorts funcs) = vcat [
       hsep (text "sorts: " : (toDoc <$> sorts))
@@ -170,28 +166,114 @@ instance ToDoc FolSignature where
             ty (as, r) = "(" ++ intercalate ", " (sortName <$> as) ++ ") -> " ++ sortName r
 
 instance ToDoc FolProblem where
-  toDoc (FolProblem sig rules goals) = vcat $
-        [ toDoc sig
-        , text ""
-        ]
-     ++ [ vcat [ toDoc r $$ nest 5 (toDoc $ translateRule r), text ""] | r <- rules]
-     ++ [ text ""
-        , text "" 
-        , toDoc transitionRelation
-        , text ""
-        , text ""
-        ]
-     ++ [ toDoc g | g <- goals ]
+  toDoc p = vcat $ intersperse (text "")
+     [ text "signature:" $$ nest 5 (toDoc (folSignature p))
+     , nestedforms "assumptions:" folAssumptions
+     , nestedforms "goals:" folGoals
+     ]
+     where nestedforms title fs =  text title $$ nest 5 
+            (vcat $ intersperse (text "") [ t $$ nest 5 (toDoc f)  | (t, f) <- fs p ])
 
------------------------------
+  
+uniq :: (Ord a, Eq a) => [a] -> [a]
+uniq = Data.Set.toList . Data.Set.fromList 
+
+
+folSignature :: FolProblem -> FolSignature
+folSignature p = FolSignature (uniq $ forms >>= sorts) (uniq $ forms >>= funcs)
+  where forms = (folAssumptions p ++ folGoals p) <&> snd
+
+        sorts (FolAtom t) = sorts' t
+        sorts (FolBool _) = [FolSortBool]
+        sorts (FolNot f) = sorts f
+        sorts (FolConn _ l r) = sorts l ++ sorts r
+        sorts (FolConnMultiline _ fs) = sorts =<< fs
+        sorts (FolQua _ _ f) = sorts f
+
+        sorts' (FolVar (_, s)) = [s]
+        sorts' (FolApp fid fs) = res:args ++  (sorts' =<< fs)
+          where (args, res) = folFuncSig fid
+
+
+        funcs (FolAtom t) = funcs' t
+        funcs (FolBool _) = []
+        funcs (FolNot f) = funcs f
+        funcs (FolConn _ l r) = funcs l ++ funcs r
+        funcs (FolConnMultiline _ fs) = funcs =<< fs
+        funcs (FolQua _ _ f) = funcs f
+
+        funcs' (FolVar _) = []
+        funcs' (FolApp fid fs) = fid : (funcs' =<< fs)
+
+folAssumptions :: FolProblem -> [(Doc, FolFormula)]
+folAssumptions (FolProblem rules _) = 
+     [ (toDoc r, translateRule r) | r <- rules ]
+  ++ [ (text "transition relation", transitionRelation) 
+     , (text "add def", addDef)
+     -- , (text "add def", tempSuccDef)
+     ]
+
+addT :: FolTerm -> FolTerm -> FolTerm
+addT l r = FolApp FolNatAdd [l, r]
+
+zeroT :: FolTerm
+zeroT =  FolApp FolNatZero []
+
+oneT :: FolTerm
+oneT = succT zeroT 
+
+succT :: FolTerm -> FolTerm
+succT t =  FolApp FolNatSucc [t]
+
+stateT :: FolTerm -> FolTerm -> FolTerm
+stateT x y = FolApp FolFuncState [x, y]
+
+preT :: FolTerm -> FolTerm -> FolTerm
+preT x y = FolApp FolFuncPre [x, y]
+
+conT :: FolTerm -> FolTerm -> FolTerm
+conT x y = FolApp FolFuncCon [x, y]
+
+sumT :: [FolTerm] -> FolTerm
+sumT = aggregate zeroT addT
+
+equalsT :: FolTerm -> FolTerm -> FolTerm
+equalsT l r = FolApp FolFuncEquals [l, r]
+
+ruleT :: SupportedRule -> FolTerm
+ruleT r = FolApp (FolRule r) (FolVar <$> ruleVars r)
+
+stateP :: FolTerm -> FolTerm -> FolFormula
+stateP x y = FolAtom $ FolApp FolPredState [x, y]
+
+preP :: FolTerm -> FolTerm -> FolFormula
+preP x y = FolAtom $ FolApp FolPredPre [x, y]
+
+conP :: FolTerm -> FolTerm -> FolFormula
+conP x y = FolAtom $ FolApp FolPredCon [x, y]
+
+actP :: FolTerm -> FolTerm -> FolFormula
+actP x y = FolAtom $ FolApp FolPredAct [x, y]
+
+labP :: FolTerm -> FolTerm -> FolFormula
+labP x y = FolAtom $ FolApp FolPredLab [x, y]
+
+
+addDef :: FolFormula
+addDef = FolConnMultiline And [ allQ x       ( addT x' zeroT      ~~ x')
+                              , allQ' [x, y] ( addT x' (succT y') ~~ succT (addT x' y'))   ]
+  where x = ("x", FolSortNat)
+        y = ("y", FolSortNat)
+        x' = FolVar x
+        y' = FolVar y
+
+folGoals :: FolProblem -> [(Doc, FolFormula)]
+folGoals (FolProblem _ goals) = [ (text name, form) | FolGoal name form <- goals ]
 
 
 outputNice :: ToDoc a => a -> IO ()
 outputNice = putStr . render . toDoc
 
-timeVar :: FolTerm
-timeVar = FolVar ("__time__", FolSortTemp)
--- TODO clean var name
 
 (/\) :: FolFormula -> FolFormula  -> FolFormula
 (/\) = FolConn And
@@ -207,9 +289,6 @@ timeVar = FolVar ("__time__", FolSortTemp)
 
 neg :: FolFormula -> FolFormula
 neg = FolNot
-
-($$$) :: FolFuncId -> [FolTerm] -> FolTerm
-($$$) = FolApp
 
 ex :: FolVar -> FolFormula -> FolFormula
 ex = FolQua Ex
@@ -244,61 +323,40 @@ conj = aggregate (FolBool True) (/\)
 disj :: [FolFormula] -> FolFormula
 disj = aggregate (FolBool False) (\/)
 
-succT :: FolTerm -> FolTerm
-succT t = FolNatSucc $$$ [t]
-
-addNat :: Int -> FolTerm  -> FolTerm
-addNat i t
-  | i == 0 = t
-  | i > 0  = succT $ addNat (i - 1) t
-  | otherwise  = error "trying to add negative natural number"
-
 type FolVar = (String, FolSort)
 
 ruleVars :: SupportedRule -> [FolVar]
-ruleVars (SupportedRule _ ls as rs) = Data.Set.toList
-                                    $ Data.Set.fromList
+ruleVars (SupportedRule _ ls as rs) = uniq
                                     $ (ls ++ as ++ rs) >>= vars . factT ()
 
 vars :: FolTerm -> [FolVar]
 vars (FolVar v) = [v]
 vars (FolApp _ as) = as >>= vars
 
-ruleTerm :: SupportedRule -> FolTerm
-ruleTerm r = FolRule r $$$ (FolVar <$> ruleVars r)
-
-sumT :: [FolTerm] -> FolTerm
-sumT = aggregate (FolNatZero$$$[]) (\l r -> FolNatAdd$$$[l,r])
-
-equalsT :: FolTerm -> FolTerm -> FolTerm
-equalsT l r = FolFuncEquals $$$ [l, r]
-
 translateRule :: SupportedRule -> FolFormula
 translateRule rule@(SupportedRule _name ls as rs) =
   allQ' (ruleVars rule) $ mlConj [
-     defFunAsSum pre ls
-   , defFunAsSum con rs
-   , defPredAsDisj (\x y -> FolAtom $ FolPredPre $$$ [x, y]) (persistent ls)
-   , defPredAsDisj (\x y -> FolAtom $ FolPredCon $$$ [x, y]) (persistent rs)
-   , defPredAsDisj (\x y -> FolAtom $ FolPredAct $$$ [x, y]) (factT () <$> as)
+     defFunAsSum preT ls
+   , defFunAsSum conT rs
+   , defPredAsDisj preP (persistent ls)
+   , defPredAsDisj conP (persistent rs)
+   , defPredAsDisj actP (factT () <$> as)
    ]
   where
     defPredAsDisj p items =
       let f = ("f", FolSortPer)
-      in allQ f (p ruleT (FolVar f) <~> disj [ x ~~ FolVar f | x <- items ])
+      in allQ f (p (ruleT rule) (FolVar f) <~> disj [ x ~~ FolVar f | x <- items ])
     defFunAsSum fun items =
       let f = ("f", FolSortLin)
-      in allQ f (fun ruleT (FolVar f) ~~ sumT [ equalsT x (FolVar f) | x <- linear items ])
+      in allQ f (fun (ruleT rule) (FolVar f) ~~ sumT [ equalsT x (FolVar f) | x <- linear items ])
     facts mult s = [ factT () f | f <- s
                                 , factMultiplicity f == mult ]
     linear = facts Linear
     persistent = facts Persistent
-    pre s t = FolFuncPre $$$ [s, t]
-    con s t = FolFuncCon $$$ [s, t]
-    ruleT = ruleTerm rule
 
+-- TODO remove ?
 tempSucc :: FolTerm -> FolTerm
-tempSucc t = FolFuncTempSucc $$$ [t]
+tempSucc t = FolApp FolFuncTempSucc [t]
 
 transitionRelation :: FolFormula
 transitionRelation = allQ t $ mlDisj [ end, ruleTransition, freshness]
@@ -310,12 +368,12 @@ transitionRelation = allQ t $ mlDisj [ end, ruleTransition, freshness]
          r' = FolVar r
          t' = FolVar t
          t2' = FolVar t2
-         end = FolAtom $ End $$$ [FolVar t]
+         end = FolAtom $ FolApp End [FolVar t]
          ruleTransition = ex r $ mlConj [ 
              let f = ("f", FolSortLin)
                  f' = FolVar f
-             in allQ f (ex n ((stateF f' t'           ~~ addF n' (preF r' f') )
-                          /\ (stateF f' (tempSucc t') ~~ addF n' (conF r' f') )))
+             in allQ f (ex n ((stateT f' t'           ~~ addT n' (preT r' f') )
+                          /\ (stateT f' (tempSucc t') ~~ addT n' (conT r' f') )))
            , let f = ("f", FolSortPer)
                  f' = FolVar f
              in allQ f (( preP r' f' ~> stateP f' t' ) 
@@ -325,34 +383,22 @@ transitionRelation = allQ t $ mlDisj [ end, ruleTransition, freshness]
              in allQ f ( labP f' t' <~> actP r' f')
            ]
          freshness = ex n $ mlConj [
-             allQ t2 (leqT t2' t' ~> (stateF t2' freshN ~~ zero))
-           , stateF (tempSucc t') freshN ~~ one
+             allQ t2 (leqT t2' t' ~> (stateT t2' freshN ~~ zeroT))
+           , stateT (tempSucc t') freshN ~~ oneT
            , let f = ("f", FolSortPer)
                  f' = FolVar f
              in allQ f (stateP (tempSucc t') f' <~> stateP t' f')
            , let f = ("f", FolSortLin)
                  f' = FolVar f
-             in allQ f (( f' ~/~ freshN ) ~> (stateF (tempSucc t') f' ~~ stateF t' f'))
+             in allQ f (( f' ~/~ freshN ) ~> (stateT (tempSucc t') f' ~~ stateT t' f'))
            , let f = ("f", FolSortAct)
                  f' = FolVar f
              in allQ f (neg (labP (tempSucc t') f'))
            ]
-         leqT x y = ex diff (addF x diff' ~~ y)
+         leqT x y = ex diff (addT x diff' ~~ y)
            where diff = ("diff", FolSortTemp)
                  diff' = FolVar diff
-         freshN = FactSymbol FreshFact $$$ [FolFuncFresh $$$ [n']]
-         stateF x y = FolFuncState $$$ [x, y]
-         stateP x y = FolAtom $ FolPredState $$$ [x, y]
-         zero =  FolNatZero $$$ []
-         one =  FolNatSucc $$$ [FolNatZero $$$ []]
-         preP x y = FolAtom $ FolPredPre $$$ [x, y]
-         conP x y = FolAtom $ FolPredCon $$$ [x, y]
-         actP x y = FolAtom $ FolPredAct $$$ [x, y]
-         labP x y = FolAtom $ FolPredLab $$$ [x, y]
-         preF x y = FolFuncPre $$$ [x, y]
-         conF x y = FolFuncCon $$$ [x, y]
-         addF x y = FolNatAdd $$$ [x, y]
-
+         freshN = FolApp (FactSymbol FreshFact) [FolApp FolFuncFresh [n']]
 
 
 data SupportedRule = SupportedRule {
@@ -484,7 +530,7 @@ toFolSignature (Theory _name _inFile _heuristic _tactic signature _cache items _
 
 
 toFolProblem :: OpenTheory -> FolProblem
-toFolProblem th = FolProblem (toFolSignature th) (toFolRules $ _thyItems th) (mapMaybe toFolGoal $ _thyItems th)
+toFolProblem th = FolProblem (toFolRules $ _thyItems th) (mapMaybe toFolGoal $ _thyItems th)
 
 data FolGoal = FolGoal String FolFormula
   deriving (Show)
@@ -526,8 +572,8 @@ instance PVar LVar where
   type PVarCtx LVar = ()
 
   -- varFromContext () (LVar name sort _idx) = FolVar (name, (toFolSort sort))
-  varFromContext () (LVar name LSortPub _idx) = FolFuncPub $$$ [FolVar (name, FolSortNat)]
-  varFromContext () (LVar name LSortFresh _idx) = FolFuncFresh $$$ [FolVar (name, FolSortNat)]
+  varFromContext () (LVar name LSortPub _idx) = FolApp FolFuncPub [FolVar (name, FolSortNat)]
+  varFromContext () (LVar name LSortFresh _idx) = FolApp FolFuncFresh [FolVar (name, FolSortNat)]
   varFromContext () (LVar name sort _idx) = FolVar (name, toFolSort sort)
 
 factT :: PVar v => PVarCtx v -> Fact (VTerm Name v) -> FolTerm
@@ -549,7 +595,7 @@ sortOf (FolVar (_, s)) = s
 -- TODO add def
 
 toFolAtom :: (PVar v, Show v) => PVarCtx v -> ProtoAtom Unit2 (VTerm Name v) -> FolFormula
-toFolAtom qs (Action term fact)  = FolAtom $ FolPredAct $$$ [ toFolTerm qs term, factT qs fact]
+toFolAtom qs (Action term fact)  = FolAtom $ FolApp FolPredAct [ toFolTerm qs term, factT qs fact]
 toFolAtom qs (EqE s t) = toFolTerm qs s ~~ toFolTerm qs t
 toFolAtom qs (Less s t) = FolAtom $ FolApp FSLess $ toFolTerm qs <$> [s,t]
 toFolAtom _ t@(Subterm _ _) = error $ "unsupported atom " ++ show t
