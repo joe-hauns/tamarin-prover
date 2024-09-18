@@ -106,7 +106,9 @@ run thisMode as
         srcThy <- liftIO $ readFile  inFile
         thy    <- loadTheory thyLoadOptions srcThy inFile
         case thy of 
-          Left t -> liftIO $ do
+          Left t' -> liftIO $ do
+            let t = t'
+            -- let t = openTranslatedTheory $ addMessageDeductionRuleVariants $ removeTranslationItems t'
             prt "Heuristic" $ _thyHeuristic t
             prt "Tactic" $ _thyTactic t
             prt "Cache" $ _thyCache t
@@ -129,11 +131,15 @@ run thisMode as
             putStrLn ""
             putStrLn "=================================================="
             putStrLn ""
-            prt "toFolSignature" $ toFolSignature t
+            outputNice $ toFolProblem TempAbstract t
             putStrLn ""
+            putStrLn "=================================================="
             putStrLn ""
+            outputNice $ toFolProblem TempRat t
             putStrLn ""
-            outputNice $ toFolProblem t
+            putStrLn "=================================================="
+            putStrLn ""
+            outputNice $ toFolProblem TempNat t
               where prt s x = putStrLn $ s ++ ": " ++ show x
           Right _diffThy -> error "translation of diff theory is not supported (yet)"
         )
