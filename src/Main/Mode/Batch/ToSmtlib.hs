@@ -23,6 +23,7 @@ import Data.Functor
 import Data.ByteString.Char8 (unpack)
 import Theory
 import Data.Set
+import Term.SubtermRule 
 
 data Smtlib = Smtlib
   deriving (Show)
@@ -144,6 +145,7 @@ data FolProblem = FolProblem {
   , _fpRules   :: [FolRule]
   , _fpFormula :: [FolGoal]
   , _fpMsgCons :: [FunSym]
+  , _fpEq      :: [FolFormula]
   }
   deriving (Show)
 
@@ -282,12 +284,13 @@ folSignature p = FolSignature (uniq $ forms >>= sorts) (uniq $ forms >>= funcs)
         funcs' (FolApp fid fs) = fid : (funcs' =<< fs)
 
 folAssumptions :: FolProblem -> [(Doc, FolFormula)]
-folAssumptions (FolProblem temp rules _ msgSyms) =
+folAssumptions (FolProblem temp rules _ msgSyms eq) =
      [ (toDoc r, translateRule r) | r <- rules ++ mdRules ]
-  ++ [ (text "transition relation", transitionRelation)
-     , (text "start condition", startCondition)
+  ++ [ (text "start condition", startCondition)
+     , (text "transition relation", transitionRelation)
      , (text "addition definition", addDef)
      ]
+  ++ [ (text "equation theory:", mlConj eq) ]
   where 
     mdRules :: [FolRule]
     mdRules = [
@@ -303,7 +306,7 @@ folAssumptions (FolProblem temp rules _ msgSyms) =
             , let arity = folFuncArity fun
             , let xs = [ FolVar ("x" ++ show i, FolSortMsg) | i <- [1 .. arity] ] ]
       where x  = FolVar ("x", FolSortMsg)
-            ($$) f as = FolApp (FolFuncFact f) as
+            ($$) f = FolApp (FolFuncFact f)
             n = FolVar ("n", FolSortNat)
 
     factIn    x = FolApp (FolFuncFact FolFactIn   ) [x]
@@ -378,10 +381,10 @@ folAssumptions (FolProblem temp rules _ msgSyms) =
     translateRule rule@(FolRule _name ls as rs) =
       allQ (ruleVars rule) $ mlConj [
          defFunAsSum preT ls
-       , defFunAsSum conT rs
        , defPredAsDisj preP (persistent ls)
-       , defPredAsDisj conP (persistent rs)
        , defPredAsDisj actP as
+       , defPredAsDisj conP (persistent rs)
+       , defFunAsSum conT rs
        ]
       where
         defPredAsDisj p items =
@@ -464,7 +467,7 @@ folAssumptions (FolProblem temp rules _ msgSyms) =
                    TempRat -> literalQT 0
 
 folGoals :: FolProblem -> [(Doc, FolFormula)]
-folGoals (FolProblem _ _ goals _) = [ (text name, form) | FolGoal name form <- goals ]
+folGoals (FolProblem _ _ goals _ _) = [ (text name, form) | FolGoal name form <- goals ]
 
 
 outputNice :: ToDoc a => a -> IO ()
@@ -627,6 +630,18 @@ toFolProblem temp th
                (toFolRules temp $ _thyItems th) 
                (mapMaybe (toFolGoal temp) $ _thyItems th)
                (Data.Set.toList $ funSyms $ _sigMaudeInfo $ _thySignature th)
+               ( fmap (toEquationalTheory temp) $ Data.Set.toList $ stRules $ _sigMaudeInfo $ _thySignature th)
+
+universalClosure :: FolFormula -> FolFormula
+universalClosure (FolAtom t) = allQ (varSet t) (FolAtom t)
+universalClosure x = undefined -- TODO
+
+
+
+toEquationalTheory :: TempTranslation -> CtxtStRule -> FolFormula
+toEquationalTheory temp (CtxtStRule lhs (StRhs _pos rhs)) = universalClosure $ toFolTerm temp () lhs ~~ toFolTerm temp () rhs
+
+-- TODO test file with non context rewrite rules
 
 data FolGoal = FolGoal String FolFormula
   deriving (Show)
@@ -667,10 +682,12 @@ instance PVar (BVar LVar) where
 instance PVar LVar where
   type PVarCtx LVar = ()
 
-  -- varFromContext () (LVar name sort _idx) = FolVar (name, (toFolSort sort))
-  varFromContext _ () (LVar name LSortPub _idx) = FolApp FolFuncPub [FolVar (name, FolSortNat)]
-  varFromContext _ () (LVar name LSortFresh _idx) = FolApp FolFuncFresh [FolVar (name, FolSortNat)]
-  varFromContext temp () (LVar name sort _idx) = FolVar (name, toFolSort temp sort)
+  varFromContext temp () (LVar n sort idx) 
+    = case sort of 
+        LSortPub   -> FolApp FolFuncPub   [FolVar (name, FolSortNat)]
+        LSortFresh -> FolApp FolFuncFresh [FolVar (name, FolSortNat)]
+        _          -> FolVar (name, toFolSort temp sort)
+      where name = if idx  == 0 then "v_" ++ n else "v_" ++ n ++ "_" ++ show idx
 
 
 

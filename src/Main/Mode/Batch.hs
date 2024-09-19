@@ -129,16 +129,6 @@ run thisMode as
             forM_ items' $ \item -> do
               putStrLn $ "  " ++ (show item)
             putStrLn ""
-            putStrLn "=================================================="
-            putStrLn ""
-            outputNice $ toFolProblem TempAbstract t
-            putStrLn ""
-            putStrLn "=================================================="
-            putStrLn ""
-            outputNice $ toFolProblem TempRat t
-            putStrLn ""
-            putStrLn "=================================================="
-            putStrLn ""
             outputNice $ toFolProblem TempNat t
               where prt s x = putStrLn $ s ++ ": " ++ show x
           Right _diffThy -> error "translation of diff theory is not supported (yet)"
