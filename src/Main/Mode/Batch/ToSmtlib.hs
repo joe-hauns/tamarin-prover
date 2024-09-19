@@ -41,11 +41,70 @@ data FolSort = FolSortMsg
              | FolSortAct
   deriving (Show,Ord,Eq)
 
+data FolFactTag = FolFactUser Multiplicity String Int 
+                | FolFactOut
+                | FolFactIn
+                | FolFactKnown
+                | FolFactFresh
+  deriving (Show,Ord,Eq)
+
+folFactTagMultiplicity :: FolFactTag -> Multiplicity 
+folFactTagMultiplicity (FolFactUser m _ _) = m
+folFactTagMultiplicity FolFactOut = Linear
+folFactTagMultiplicity FolFactIn = Linear
+folFactTagMultiplicity FolFactKnown = Persistent
+folFactTagMultiplicity FolFactFresh = Linear
+
+folFactTagArity :: FolFactTag -> Int 
+folFactTagArity (FolFactUser _ _ a) = a
+folFactTagArity FolFactOut = 1
+folFactTagArity FolFactIn = 1
+folFactTagArity FolFactKnown = 1
+folFactTagArity FolFactFresh = 1
+
+unreachableErrMsg1 :: FactTag -> a
+unreachableErrMsg1 f = error $ "unreachable. " ++ show f ++ " facts are not allowed in rule definition in input file."
+
+toFolFactTag :: FactTag -> FolFactTag 
+toFolFactTag (ProtoFact m s i) = FolFactUser m s i
+toFolFactTag FreshFact  = FolFactFresh
+toFolFactTag OutFact    = FolFactOut
+toFolFactTag InFact     = FolFactIn
+toFolFactTag f@KUFact   = unreachableErrMsg1 f
+toFolFactTag f@KDFact   = unreachableErrMsg1 f
+toFolFactTag f@DedFact  = unreachableErrMsg1 f
+toFolFactTag f@TermFact = unreachableErrMsg1 f
+
+
+type MsgFuncId = FunSym
+
+-- folFuncTuple (MsgSymbol (NoEq (name, (arity, _priv, _constr)))) = 
+--                    (unpack name, [FolSortMsg | _ <- [1..arity]], FolSortMsg)
+-- folFuncTuple (MsgSymbol (AC ac)) = 
+--                    (show ac, [FolSortMsg, FolSortMsg], FolSortMsg)
+-- folFuncTuple (MsgSymbol (C EMap)) = error "EMap message not supported (yet)"
+-- folFuncTuple (MsgSymbol List) = error "List message not supported (yet)"
+
+
+msgFuncIdPrivacy :: MsgFuncId -> Privacy
+msgFuncIdPrivacy (NoEq (_, (_, priv, _constr))) = priv
+msgFuncIdPrivacy (AC ac) = Public
+
+msgFuncIdName :: MsgFuncId -> String
+msgFuncIdName (NoEq (name, (_, _, _constr))) = "u_" ++ unpack name
+msgFuncIdName (AC ac) = show ac
+
+
+msgFuncIdArity :: MsgFuncId -> Int
+msgFuncIdArity (NoEq (_, (arity, _, _constr))) = arity
+msgFuncIdArity (AC _) = 2
+
 data FolFuncId = FolEq FolSort
                | FolTempLess TempTranslation
                | End TempTranslation
-               | MsgSymbol FunSym
-               | FactSymbol FactTag
+               | MsgSymbol MsgFuncId
+               | FolFuncFact FolFactTag
+               | FolFuncAct FolFactTag
                | FolNatAdd
                | FolNatSucc
                | FolNatZero
@@ -84,6 +143,7 @@ data FolProblem = FolProblem {
     _fpTemp    :: TempTranslation
   , _fpRules   :: [FolRule]
   , _fpFormula :: [FolGoal]
+  , _fpMsgCons :: [FunSym]
   }
   deriving (Show)
 
@@ -221,11 +281,8 @@ folSignature p = FolSignature (uniq $ forms >>= sorts) (uniq $ forms >>= funcs)
         funcs' (FolVar _) = []
         funcs' (FolApp fid fs) = fid : (funcs' =<< fs)
 
--- TODO MD rules
-
-
 folAssumptions :: FolProblem -> [(Doc, FolFormula)]
-folAssumptions (FolProblem temp rules _) =
+folAssumptions (FolProblem temp rules _ msgSyms) =
      [ (toDoc r, translateRule r) | r <- rules ++ mdRules ]
   ++ [ (text "transition relation", transitionRelation)
      , (text "start condition", startCondition)
@@ -234,8 +291,28 @@ folAssumptions (FolProblem temp rules _) =
   where 
     mdRules :: [FolRule]
     mdRules = [
-        -- SupporedRule (Some "MD1") [Fact annotations  ][][]
-      ]
+          FolRule "md0" [  factIn x ][         ][ factK x  ]
+        , FolRule "md1" [  factK x  ][  actK x ][ factIn x ]
+        , FolRule "md2" [           ][         ][ factK (pubVarT n) ]
+        , FolRule "md3" [  factFresh (freshVarT n) ][         ][ factK (freshVarT n) ]
+        ]
+        ++ [ FolRule ("md4_" ++ folFuncName fun)
+                     [ factK x | x <- xs ] [] [ factK (FolApp fun xs) ]
+            | fun@(MsgSymbol s) <- fmap MsgSymbol msgSyms
+            , msgFuncIdPrivacy s == Public
+            , let arity = folFuncArity fun
+            , let xs = [ FolVar ("x" ++ show i, FolSortMsg) | i <- [1 .. arity] ] ]
+      where x  = FolVar ("x", FolSortMsg)
+            ($$) f as = FolApp (FolFuncFact f) as
+            n = FolVar ("n", FolSortNat)
+
+    factIn    x = FolApp (FolFuncFact FolFactIn   ) [x]
+    factOut   x = FolApp (FolFuncFact FolFactOut  ) [x]
+    factK     x = FolApp (FolFuncFact FolFactKnown) [x]
+    factFresh x = FolApp (FolFuncFact FolFactFresh) [x]
+    actK      x = FolApp (FolFuncAct  FolFactKnown) [x]
+    freshVarT x = FolApp FolFuncFresh [x]
+    pubVarT x   = FolApp FolFuncPub [x]
 
     addDef :: FolFormula
     addDef = FolConnMultiline And [ allQ [x   ] ( addT x' zeroT      ~~ x')
@@ -295,7 +372,7 @@ folAssumptions (FolProblem temp rules _) =
              leqT x y = exQ [diff] (addT x diff' ~~ y)
                where diff = ("diff", tempSort temp)
                      diff' = FolVar diff
-             freshN = FolApp (FactSymbol FreshFact) [FolApp FolFuncFresh [n']]
+             freshN = factFresh (freshVarT n')
 
     translateRule :: FolRule -> FolFormula
     translateRule rule@(FolRule _name ls as rs) =
@@ -315,7 +392,7 @@ folAssumptions (FolProblem temp rules _) =
           in allQ [f] (fun (ruleT rule) (FolVar f) ~~ sumT [ equalsT x (FolVar f) | x <- linear items ])
         facts mult s = [ f | f <- s
                            , factTermMultiplicity f == mult ]
-        factTermMultiplicity (FolApp (FactSymbol tag) _args) = factTagMultiplicity tag
+        factTermMultiplicity (FolApp (FolFuncFact tag) _args)  = folFactTagMultiplicity tag
         factTermMultiplicity _ = error "unreachable"
         linear = facts Linear
         persistent = facts Persistent
@@ -387,7 +464,7 @@ folAssumptions (FolProblem temp rules _) =
                    TempRat -> literalQT 0
 
 folGoals :: FolProblem -> [(Doc, FolFormula)]
-folGoals (FolProblem _ _ goals) = [ (text name, form) | FolGoal name form <- goals ]
+folGoals (FolProblem _ _ goals _) = [ (text name, form) | FolGoal name form <- goals ]
 
 
 outputNice :: ToDoc a => a -> IO ()
@@ -454,25 +531,20 @@ data FolRule = FolRule {
     deriving (Show,Eq,Ord)
 
 
+folFactTagName (FolFactUser _ name _) = "f_" ++ name
+folFactTagName FolFactFresh = "Fr"
+folFactTagName FolFactOut  = "Out"
+folFactTagName FolFactIn = "In"
+folFactTagName FolFactKnown = "K"
+
 folFuncTuple :: FolFuncId -> (String, [FolSort], FolSort)
 folFuncTuple (End temp) = ("end", [tempSort temp], FolSortBool)
-folFuncTuple (MsgSymbol (NoEq (name, (arity, _priv, _constr)))) = 
-                   (unpack name, [FolSortMsg | _ <- [1..arity]], FolSortMsg)
-folFuncTuple (MsgSymbol (AC ac)) = 
-                   (show ac, [FolSortMsg, FolSortMsg], FolSortMsg)
-folFuncTuple (MsgSymbol (C EMap)) = error "EMap message not supported (yet)"
-folFuncTuple (MsgSymbol List) = error "List message not supported (yet)"
-folFuncTuple (FactSymbol tag) = (ftName tag, [FolSortMsg | _ <- [1..factTagArity tag]], srt (factTagMultiplicity tag))
+folFuncTuple (MsgSymbol s) = (msgFuncIdName s, [FolSortMsg | _ <- [1..msgFuncIdArity s]], FolSortMsg)
+
+folFuncTuple (FolFuncAct tag) = ("a_" ++ folFactTagName tag, [FolSortMsg | _ <- [1..folFactTagArity tag]], FolSortAct)
+folFuncTuple (FolFuncFact tag) = (folFactTagName tag, [FolSortMsg | _ <- [1..folFactTagArity tag]], srt (folFactTagMultiplicity tag))
   where srt Persistent = FolSortPer
         srt Linear = FolSortLin
-        ftName (ProtoFact _ name _) = name
-        ftName FreshFact = "Fr"
-        ftName OutFact  = "Out"
-        ftName InFact = "In"
-        ftName KUFact = "KU"
-        ftName KDFact = "KD"
-        ftName DedFact = "Ded"
-        ftName TermFact = "Term"
 folFuncTuple (FolEq s) = ("=", [s, s], FolSortBool)
 folFuncTuple (FolTempLess temp) = ("tempLess", [tempSort temp, tempSort temp], FolSortBool)
 folFuncTuple FolNatSucc = ("s", [FolSortNat], FolSortNat)
@@ -500,6 +572,9 @@ folFuncName f = let (n, _, _) = folFuncTuple f in n
 
 folFuncSig :: FolFuncId -> ([FolSort], FolSort)
 folFuncSig f = let (_, as, r) = folFuncTuple f in (as, r)
+
+folFuncArity :: FolFuncId -> Int
+folFuncArity = length . fst . folFuncSig
 
 assertEq :: (Show a, Eq a) => a -> a -> String -> Bool
 assertEq l r name | l == r    = True
@@ -531,7 +606,7 @@ toFolRules temp = mapMaybe toRule
            && assertEmpty restriction "restriction"  
               = Just (FolRule name' 
                               (factT temp () <$> prems) 
-                              (factT temp () <$> acts) 
+                              ( actT temp () <$> acts) 
                               (factT temp () <$> concs))
            where name' = case name of
                     FreshRule -> "ruleFresh"
@@ -547,7 +622,11 @@ getTag (Fact tag factAnnotations _factTerms)
  | assertEmptyS factAnnotations "factAnnotations" = tag
 
 toFolProblem :: TempTranslation -> OpenTheory -> FolProblem
-toFolProblem temp th = FolProblem temp (toFolRules temp $ _thyItems th) (mapMaybe (toFolGoal temp) $ _thyItems th)
+toFolProblem temp th 
+  = FolProblem temp 
+               (toFolRules temp $ _thyItems th) 
+               (mapMaybe (toFolGoal temp) $ _thyItems th)
+               (Data.Set.toList $ funSyms $ _sigMaudeInfo $ _thySignature th)
 
 data FolGoal = FolGoal String FolFormula
   deriving (Show)
@@ -568,8 +647,8 @@ toFolFormula temp qs (Qua q (v,s) f) = FolQua q (v, s') (toFolFormula temp ((v, 
   where s' = toFolSort temp s
 
 toFolSort :: TempTranslation -> LSort -> FolSort
-toFolSort _ LSortPub   = undefined
-toFolSort _ LSortFresh = undefined
+toFolSort _ LSortPub   = error $ "unreachable"
+toFolSort _ LSortFresh = error $ "unreachable"
 toFolSort _ LSortMsg =  FolSortMsg
 toFolSort temp LSortNode = tempSort temp
 toFolSort _ srt@LSortNat =  error $ "unexpected sort: " ++ show srt
@@ -593,11 +672,19 @@ instance PVar LVar where
   varFromContext _ () (LVar name LSortFresh _idx) = FolApp FolFuncFresh [FolVar (name, FolSortNat)]
   varFromContext temp () (LVar name sort _idx) = FolVar (name, toFolSort temp sort)
 
-factT :: PVar v => TempTranslation -> PVarCtx v -> Fact (VTerm Name v) -> FolTerm
-factT temp qs (Fact tag factAnnotations terms)
+
+
+factOrActT :: PVar v => (FolFactTag -> FolFuncId) -> TempTranslation -> PVarCtx v -> Fact (VTerm Name v) -> FolTerm
+factOrActT toFuncId temp qs (Fact tag factAnnotations terms)
  | assertEmptyS factAnnotations "factAnnotations"
-   = FolApp (FactSymbol tag) (toFolTerm temp qs <$> terms)
- | otherwise = undefined
+   = FolApp (toFuncId (toFolFactTag tag)) (toFolTerm temp qs <$> terms)
+ | otherwise = error "unreachable"
+
+factT :: PVar v => TempTranslation -> PVarCtx v -> Fact (VTerm Name v) -> FolTerm
+factT = factOrActT FolFuncFact
+
+actT :: PVar v => TempTranslation -> PVarCtx v -> Fact (VTerm Name v) -> FolTerm
+actT = factOrActT FolFuncAct
 
 sortOf :: FolTerm -> FolSort
 sortOf (FolApp f _) = snd (folFuncSig f)
@@ -610,7 +697,7 @@ sortOf (FolVar (_, s)) = s
 (~/~) l r = neg (l ~~ r)
 
 toFolAtom :: (PVar v, Show v) => TempTranslation -> PVarCtx v -> ProtoAtom Unit2 (VTerm Name v) -> FolFormula
-toFolAtom temp qs (Action term fact)  = FolAtom $ FolApp FolPredAct [ toFolTerm temp qs term, factT temp qs fact]
+toFolAtom temp qs (Action term fact)  = FolAtom $ FolApp FolPredAct [ toFolTerm temp qs term, actT temp qs fact]
 toFolAtom temp qs (EqE s t) = toFolTerm temp qs s ~~ toFolTerm temp qs t
 toFolAtom temp qs (Less s t) = FolAtom $ FolApp (FolTempLess temp) $ toFolTerm temp qs <$> [s,t]
 toFolAtom _ _ t@(Subterm _ _) = error $ "unsupported atom " ++ show t
