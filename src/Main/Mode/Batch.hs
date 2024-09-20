@@ -101,14 +101,19 @@ run :: TamarinMode -> Arguments -> IO ()
 run thisMode as
   | null inFiles = helpAndExit thisMode (Just "no input files given")
   | argExists "toSmtlib" as = either handleError pure <=< runExceptT $ do
+      -- versionData <- liftIO $ ensureMaudeAndGetVersion as
 
       forM_ inFiles (\inFile -> do
         srcThy <- liftIO $ readFile  inFile
         thy    <- loadTheory thyLoadOptions srcThy inFile
+        -- let sig = either (._thySignature) (._diffThySignature) thy
+        -- sig'   <- liftIO $ toSignatureWithMaude thyLoadOptions._oMaudePath sig
+        -- (report, thy') <- closeTheory versionData thyLoadOptions sig' thy
+
         case thy of 
           Left t' -> liftIO $ do
             let t = t'
-            -- let t = openTranslatedTheory $ addMessageDeductionRuleVariants $ removeTranslationItems t'
+            -- let t = openTranslatedTheory $ removeTranslationItems t'
             prt "Heuristic" $ _thyHeuristic t
             prt "Tactic" $ _thyTactic t
             prt "Cache" $ _thyCache t

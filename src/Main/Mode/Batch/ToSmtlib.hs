@@ -1,6 +1,7 @@
 {-# LANGUAGE TypeFamilies       #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Use foldr" #-}
+{-# OPTIONS_GHC -Wno-name-shadowing #-}
 
 -- TODO equational theories
 -- TODO import DH and so
@@ -20,10 +21,11 @@ import Theory.Model
 import Data.Maybe
 import Data.List (intercalate,genericIndex,intersperse)
 import Data.Functor
-import Data.ByteString.Char8 (unpack)
+import qualified Data.ByteString.Char8 as BS
 import Theory
 import Data.Set
 import Term.SubtermRule 
+import Control.Monad
 
 data Smtlib = Smtlib
   deriving (Show)
@@ -90,15 +92,18 @@ type MsgFuncId = FunSym
 msgFuncIdPrivacy :: MsgFuncId -> Privacy
 msgFuncIdPrivacy (NoEq (_, (_, priv, _constr))) = priv
 msgFuncIdPrivacy (AC ac) = Public
+msgFuncIdPrivacy (C EMap) = Public
 
 msgFuncIdName :: MsgFuncId -> String
-msgFuncIdName (NoEq (name, (_, _, _constr))) = "u_" ++ unpack name
+msgFuncIdName (NoEq (name, (_, _, _constr))) = "u_" ++ BS.unpack name
 msgFuncIdName (AC ac) = show ac
+msgFuncIdName (C EMap) = "emap"
 
 
 msgFuncIdArity :: MsgFuncId -> Int
 msgFuncIdArity (NoEq (_, (arity, _, _constr))) = arity
 msgFuncIdArity (AC _) = 2
+msgFuncIdArity (C EMap) = 2
 
 data FolFuncId = FolEq FolSort
                | FolTempLess TempTranslation
@@ -125,6 +130,7 @@ data FolFuncId = FolEq FolSort
                | FolFuncTempZero
                | FolRatLiteral Rational
                | FolRatAdd
+               | FolFuncLiteral NameId FolSort
   deriving (Show,Ord,Eq)
 
 data FolTerm = FolApp FolFuncId [FolTerm]
@@ -486,6 +492,9 @@ outputNice = putStr . render . toDoc
 (~>) :: FolFormula -> FolFormula  -> FolFormula
 (~>) = FolConn Imp
 
+(<~) :: FolFormula -> FolFormula  -> FolFormula
+(<~) = flip (~>)
+
 neg :: FolFormula -> FolFormula
 neg = FolNot
 
@@ -543,7 +552,6 @@ folFactTagName FolFactKnown = "K"
 folFuncTuple :: FolFuncId -> (String, [FolSort], FolSort)
 folFuncTuple (End temp) = ("end", [tempSort temp], FolSortBool)
 folFuncTuple (MsgSymbol s) = (msgFuncIdName s, [FolSortMsg | _ <- [1..msgFuncIdArity s]], FolSortMsg)
-
 folFuncTuple (FolFuncAct tag) = ("a_" ++ folFactTagName tag, [FolSortMsg | _ <- [1..folFactTagArity tag]], FolSortAct)
 folFuncTuple (FolFuncFact tag) = (folFactTagName tag, [FolSortMsg | _ <- [1..folFactTagArity tag]], srt (folFactTagMultiplicity tag))
   where srt Persistent = FolSortPer
@@ -569,6 +577,7 @@ folFuncTuple FolFuncTempSucc = ("t+1", [FolSortTemp], FolSortTemp)
 folFuncTuple FolFuncTempZero = ("t0", [], FolSortTemp)
 folFuncTuple FolRatAdd = ("+", [FolSortRat, FolSortRat], FolSortRat)
 folFuncTuple (FolRatLiteral r) = (show r, [], FolSortRat)
+folFuncTuple (FolFuncLiteral n srt) = ("l_" ++ getNameId n, [], srt)
 
 folFuncName :: FolFuncId -> String
 folFuncName f = let (n, _, _) = folFuncTuple f in n
@@ -599,12 +608,11 @@ toFolRules temp = mapMaybe toRule
                        prems
                        concs
                        acts
-                       newVars -- newVars
+                       _newVars -- TODO: what are these used for?
                        )
                    ruleAC -- ruleAC
                    ))
          |    assertEmpty attr "attr"
-           && assertEmpty newVars "newVars"
            && assertEmpty ruleAC "ruleAC"
            && assertEmpty restriction "restriction"  
               = Just (FolRule name' 
@@ -624,22 +632,73 @@ getTag :: LNFact -> FactTag
 getTag (Fact tag factAnnotations _factTerms)
  | assertEmptyS factAnnotations "factAnnotations" = tag
 
+infix 5 ~~
+infixl 4 /\
+infixl 3 \/
+infixl 2 <~>
+infixl 2 ~>
+infixl 2 <~
+
 toFolProblem :: TempTranslation -> OpenTheory -> FolProblem
 toFolProblem temp th 
   = FolProblem temp 
                (toFolRules temp $ _thyItems th) 
                (mapMaybe (toFolGoal temp) $ _thyItems th)
                (Data.Set.toList $ funSyms $ _sigMaudeInfo $ _thySignature th)
-               ( fmap (toEquationalTheory temp) $ Data.Set.toList $ stRules $ _sigMaudeInfo $ _thySignature th)
+               (userEq ++ builtinEqs)
+     where 
+       userEq = fmap (stRuleToFormula temp) 
+              $ Data.Set.toList $ stRules 
+              $ _sigMaudeInfo $ _thySignature th 
+       builtinEqs = join [ builtinEq b | TranslationItem (SignatureBuiltin b) <- _thyItems th ]
+
+       builtinEq str = universalClosure <$> (case str of 
+                  "diffie-hellman" -> dh
+                  "bilinear-pairing" -> dh ++ blp
+                  _ -> error $ "unsupported builtin: " ++ str)
+         where 
+           dh = [
+               (x ^ y) ^ z  ~~ x ^ (y * z)
+             ,  x ^ one     ~~ x
+             ,  x * y       ~~ y * x
+             ,  (x * y) * z ~~ x * (y * z)
+             ,  x * one     ~~ x
+             ,  x * inv x   ~~ one
+             ]
+           blp = [
+               pmult x (pmult y p) ~~ pmult (x*y) p
+             , pmult one p           ~~ p
+             , em p q              ~~ em q p
+             , em (pmult x p) q    ~~ pmult x (em q p)
+             ]
+
+           x = FolVar ("x", FolSortMsg)
+           y = FolVar ("y", FolSortMsg)
+           z = FolVar ("z", FolSortMsg)
+           p = FolVar ("p", FolSortMsg)
+           q = FolVar ("q", FolSortMsg)
+           (*) l r = FolApp (MsgSymbol (AC Mult)) [l,r]
+           (^) l r = FolApp (MsgSymbol (NoEq expSym)) [l,r]
+           inv t = FolApp (MsgSymbol (NoEq invSym)) [t]
+           one = FolApp (MsgSymbol (NoEq oneSym)) []
+           pmult l r = FolApp (MsgSymbol (NoEq pmultSym)) [l,r]
+           em l r = FolApp (MsgSymbol (C EMap)) [l,r]
+
+
 
 universalClosure :: FolFormula -> FolFormula
-universalClosure (FolAtom t) = allQ (varSet t) (FolAtom t)
-universalClosure x = undefined -- TODO
+universalClosure f = allQ (Data.Set.toList $ freeVars f) f
 
+freeVars :: FolFormula -> Set FolVar
+freeVars (FolAtom t) = Data.Set.fromList $ varSet t
+freeVars (FolConn _ l r) = freeVars l `union` freeVars r
+freeVars (FolConnMultiline _ as) = Prelude.foldl union Data.Set.empty (fmap freeVars as)
+freeVars (FolNot f) = freeVars f
+freeVars (FolBool _) = Data.Set.empty
+freeVars (FolQua _ v f) =  freeVars f \\ singleton v
 
-
-toEquationalTheory :: TempTranslation -> CtxtStRule -> FolFormula
-toEquationalTheory temp (CtxtStRule lhs (StRhs _pos rhs)) = universalClosure $ toFolTerm temp () lhs ~~ toFolTerm temp () rhs
+stRuleToFormula :: TempTranslation -> CtxtStRule -> FolFormula
+stRuleToFormula temp (CtxtStRule lhs (StRhs _pos rhs)) = universalClosure $ toFolTerm temp () lhs ~~ toFolTerm temp () rhs
 
 -- TODO test file with non context rewrite rules
 
@@ -722,6 +781,12 @@ toFolAtom _ _ t@(Last _) = error $ "unsupported atom " ++ show t
 toFolAtom _ _ (Syntactic s) = error $ "unexpected syntactic sugar: " ++ show s
 
 toFolTerm :: PVar v => TempTranslation -> PVarCtx v -> VTerm Name v -> FolTerm
-toFolTerm _ _ (LIT (Con c)) = error $ "unexpected literal constant: " ++ show c
+toFolTerm temp _ (LIT (Con (Name tag id))) 
+  = case tag of 
+     FreshName -> FolApp FolFuncFresh [FolApp (FolFuncLiteral id FolSortNat) []]
+     PubName   -> FolApp FolFuncPub   [FolApp (FolFuncLiteral id FolSortNat) []]
+     NodeName  -> FolApp (FolFuncLiteral id (tempSort temp)) []
+     NatName   -> FolApp (FolFuncLiteral id FolSortNat     ) []
+-- toFolTerm _ _ (LIT (Con c)) = error $ "unexpected literal constant: " ++ show c
 toFolTerm temp qs (LIT (Var v)) = varFromContext temp qs v
 toFolTerm temp qs (FAPP f ts) = FolApp (MsgSymbol f) (toFolTerm temp qs <$> ts)

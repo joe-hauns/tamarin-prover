@@ -78,6 +78,7 @@ module Term.Term (
     -- ** Function symbols
     , diffSym
     , expSym
+    , invSym
     , pmultSym
     , natOneSym
     , oneSym
