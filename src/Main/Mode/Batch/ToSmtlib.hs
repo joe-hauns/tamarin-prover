@@ -20,6 +20,7 @@ import Prelude hiding ((<>))
 import Theory.Model
 import Control.Exception
 import Data.Maybe
+import Term.Builtin.Signature
 import Data.List (intercalate,genericIndex,intersperse)
 import Data.Functor
 import qualified Data.ByteString.Char8 as BS
@@ -97,7 +98,7 @@ msgFuncIdPrivacy (C EMap) = Public
 
 msgFuncIdName :: MsgFuncId -> String
 msgFuncIdName (NoEq (name, (_, _, _constr))) = "u_" ++ BS.unpack name
-msgFuncIdName (AC ac) = show ac
+msgFuncIdName (AC ac) = "ac_" ++ show ac
 msgFuncIdName (C EMap) = "emap"
 
 
@@ -122,8 +123,9 @@ data FolFuncId = FolEq FolSort
                | FolFuncCon
                | FolFuncRule FolRule
                | FolFuncEquals
-               | FolFuncFresh
-               | FolFuncPub
+               | FolFuncVarFresh
+               | FolFuncVarPub
+               | FolFuncVarNat
                | FolFuncState TempTranslation
                | FolPredState TempTranslation
                | FolPredLab TempTranslation
@@ -321,80 +323,61 @@ folAssumptions (FolProblem temp rules _ msgSyms eq) =
             , let arity = folFuncArity fun
             , let xs = [ FolVar ("x" ++ show i, FolSortMsg) | i <- [1 .. arity] ] ]
       where x  = FolVar ("x", FolSortMsg)
-            ($$) f = folApp (FolFuncFact f)
             fr = FolVar ("fr", FolSortNat)
 
     factIn    x = folApp (FolFuncFact FolFactIn   ) [x]
-    factOut   x = folApp (FolFuncFact FolFactOut  ) [x]
     factK     x = folApp (FolFuncFact FolFactKnown) [x]
     factFresh x = folApp (FolFuncFact FolFactFresh) [x]
     actK      x = folApp (FolFuncAct  FolFactKnown) [x]
-    freshVarT x = folApp FolFuncFresh [x]
-    pubVarT x   = folApp FolFuncPub [x]
+    freshVarT x = folApp FolFuncVarFresh [x]
+    pubVarT x   = folApp FolFuncVarPub [x]
 
     addDef :: FolFormula
-    addDef = FolConnMultiline And [ allQ [x   ] ( addT x' zeroT      ~~ x')
-                                  , allQ [x, y] ( addT x' (succT y') ~~ succT (addT x' y'))   ]
-      where x = ("x", FolSortNat)
-            y = ("y", FolSortNat)
-            x' = FolVar x
-            y' = FolVar y
+    addDef = FolConnMultiline And [ allQ [x   ] ( addT x zeroT      ~~ x)
+                                  , allQ [x, y] ( addT x (succT y) ~~ succT (addT x y))   ]
+      where x = FolVar ("x", FolSortNat)
+            y = FolVar ("y", FolSortNat)
 
     startCondition :: FolFormula
     startCondition = mlConj [ 
-                         let f = ("f",FolSortLin) 
-                             f' = FolVar f
-                         in allQ [f] (stateT f' startTime ~~ zeroT)
-                       , let f = ("f",FolSortPer) 
-                             f' = FolVar f
-                         in allQ [f] (FolNot $ stateP f' startTime)
+                         allQ [fl] (stateT fl startTime ~~ zeroT)
+                       , allQ [fp] (FolNot $ stateP fp startTime)
                        ]
+                       where fl  = FolVar ("f",FolSortLin) 
+                             fp  = FolVar ("f",FolSortPer) 
+
+    x_l = FolVar ("l", FolSortLin)
+    x_p = FolVar ("p", FolSortPer)
+    x_a = FolVar ("a", FolSortAct)
 
     transitionRelation :: FolFormula
-    transitionRelation = allQ [t] $ mlDisj [ end, ruleTransition, freshness]
-       where t = ("t", tempSort temp)
-             t2 = ("t2", tempSort temp)
-             r = ("r", FolSortRule)
-             n = ("n", FolSortNat)
-             n' = FolVar n
-             r' = FolVar r
-             t' = FolVar t
-             t2' = FolVar t2
-             end = FolAtom $ folApp (End temp) [FolVar t]
+    transitionRelation = allQ [t] $ mlDisj [ end t, ruleTransition, freshness]
+       where t = FolVar ("t", tempSort temp)
+             t2 = FolVar ("t2", tempSort temp)
+             r = FolVar ("r", FolSortRule)
+             n = FolVar ("n", FolSortNat)
+             end x = FolAtom $ folApp (End temp) [x]
              ruleTransition = exQ [r] $ mlConj [
-                 let f = ("f", FolSortLin)
-                     f' = FolVar f
-                 in allQ [f] (exQ [n] ((stateT f' t'      ~~ addT n' (preT r' f') )
-                              /\ (stateT f' (tempSucc t') ~~ addT n' (conT r' f') )))
-               , let f = ("f", FolSortPer)
-                     f' = FolVar f
-                 in allQ [f] (( preP r' f' ~> stateP f' t' )
-                         /\ ( stateP f' (tempSucc t') <~> ( stateP f' t' \/ conP r' f') ))
-               , let f = ("f", FolSortAct)
-                     f' = FolVar f
-                 in allQ [f] ( labP f' t' <~> actP r' f')
+                 allQ [x_l] (exQ [n] ((stateT x_l t    ~~ addT n (preT r x_l) )
+                                   /\ (stateT x_l (tempSucc t) ~~ addT n (conT r x_l) )))
+               , allQ [x_p] (( preP r x_p ~> stateP x_p t )
+                         /\ ( stateP x_p (tempSucc t) <~> ( stateP x_p t \/ conP r x_p) ))
+               , allQ [x_a] ( labP x_a t <~> actP r x_a)
                ]
              freshness = exQ [n] $ mlConj [
-                 allQ [t2] (leqT t2' t' ~> (stateT freshN t2' ~~ zeroT))
-               , stateT freshN (tempSucc t') ~~ oneT
-               , let f = ("f", FolSortPer)
-                     f' = FolVar f
-                 in allQ [f] (stateP f' (tempSucc t') <~> stateP f' t')
-               , let f = ("f", FolSortLin)
-                     f' = FolVar f
-                 in allQ [f] (( f' ~/~ freshN ) ~> (stateT f' (tempSucc t') ~~ stateT f' t'))
-               , let f = ("f", FolSortAct)
-                     f' = FolVar f
-                 in allQ [f] (neg (labP f' (tempSucc t')))
+                 allQ [t2] (leqT t2 t ~> (stateT freshN t2 ~~ zeroT))
+               , stateT freshN (tempSucc t) ~~ oneT
+               , allQ [x_p] (stateP x_p (tempSucc t) <~> stateP x_p t)
+               , allQ [x_l] (( x_l ~/~ freshN ) ~> (stateT x_l (tempSucc t) ~~ stateT x_l t))
+               , allQ [x_a] (neg (labP x_a (tempSucc t)))
                ]
-             leqT x y = exQ [diff] (addT x diff' ~~ y)
-               where diff = ("diff", tempSort temp)
-                     diff' = FolVar diff
-             freshN = factFresh (freshVarT n')
+             leqT x y = exQ [diff] (addT x diff ~~ y)
+               where diff = FolVar ("diff", tempSort temp)
+             freshN = factFresh (freshVarT n)
 
     translateRule :: FolRule -> FolFormula
     translateRule rule@(FolRule _name ls as rs) =
-      allQ (ruleVars rule) $ mlConj [
+      allQ (FolVar <$> ruleVars rule) $ mlConj [
          defFunAsSumOfLinearFacts preT ls
        , defPredAsDisj preP (persistent ls) FolSortPer
        , defPredAsDisj actP as              FolSortAct
@@ -403,11 +386,11 @@ folAssumptions (FolProblem temp rules _ msgSyms eq) =
        ]
       where
         defPredAsDisj p items srt =
-          let f = ("f_v", srt)
-          in allQ [f] (p (ruleT rule) (FolVar f) <~> disj [ x ~~ FolVar f | x <- items ])
+          allQ [f] (p (ruleT rule) f <~> disj [ x ~~ f | x <- items ])
+            where f = FolVar ("x_v", srt)
         defFunAsSumOfLinearFacts fun items =
-          let f = ("f_v", FolSortLin)
-          in allQ [f] (fun (ruleT rule) (FolVar f) ~~ sumT [ equalsT x (FolVar f) | x <- linear items ])
+          allQ [f] (fun (ruleT rule) f ~~ sumT [ equalsT x f | x <- linear items ])
+            where f = FolVar ("f_v", FolSortLin)
         facts mult s = [ f | f <- s
                            , factTermMultiplicity f == mult ]
         factTermMultiplicity (FolApp (FolFuncFact tag) _args)  = folFactTagMultiplicity tag
@@ -507,15 +490,20 @@ outputNice = putStr . render . toDoc
 neg :: FolFormula -> FolFormula
 neg = FolNot
 
-qMany :: Quantifier -> [FolVar] -> FolFormula -> FolFormula
+qMany :: Quantifier -> [FolTerm] -> FolFormula -> FolFormula
 qMany _ [] = id
-qMany q (v:vs) = FolQua q v . qMany q vs
+qMany q (v:vs) = FolQua q (unFolVar v) . qMany q vs
 
-exQ :: [FolVar] -> FolFormula -> FolFormula
+allQ :: [FolTerm] -> FolFormula -> FolFormula
+allQ = qMany All
+
+exQ :: [FolTerm] -> FolFormula -> FolFormula
 exQ = qMany Ex
 
-allQ :: [FolVar] -> FolFormula -> FolFormula
-allQ = qMany All
+unFolVar :: FolTerm -> FolVar
+unFolVar (FolVar v) = v
+unFolVar _ = undefined
+
 
 aggregate :: a -> (a -> a -> a) -> [a] -> a
 aggregate start _ []  = start
@@ -577,8 +565,9 @@ folFuncTuple FolFuncPre = ("pre", [FolSortRule, FolSortLin], FolSortNat)
 folFuncTuple FolFuncCon = ("con", [FolSortRule, FolSortLin], FolSortNat)
 folFuncTuple (FolFuncRule r) = (_frName r, snd <$> ruleVars r, FolSortRule)
 folFuncTuple FolFuncEquals = ("equals", [FolSortLin, FolSortLin], FolSortNat) 
-folFuncTuple FolFuncFresh = ("fresh", [FolSortNat], FolSortMsg)
-folFuncTuple FolFuncPub = ("pub", [FolSortNat], FolSortMsg)
+folFuncTuple FolFuncVarFresh = ("fresh", [FolSortNat], FolSortMsg)
+folFuncTuple FolFuncVarPub = ("pub", [FolSortNat], FolSortMsg)
+folFuncTuple FolFuncVarNat = ("nat", [FolSortNat], FolSortMsg)
 folFuncTuple (FolFuncState temp) = ("state", [FolSortLin, tempSort temp], FolSortNat)
 folFuncTuple (FolPredState temp) = ("State", [FolSortPer, tempSort temp], FolSortBool)
 folFuncTuple (FolPredLab temp) = ("Lab", [FolSortAct, tempSort temp], FolSortBool)
@@ -662,41 +651,105 @@ toFolProblem temp th
        builtinEqs = join [ builtinEq b | TranslationItem (SignatureBuiltin b) <- _thyItems th ]
 
        builtinEq str = universalClosure <$> (case str of 
+                  "hashing" -> []
+                  "asymmetric-encryption" -> asym
+                  "signing" -> signing
+                  "revealing-signing" -> revSigning
+                  "symmetric-encryption" -> sym
                   "diffie-hellman" -> dh
                   "bilinear-pairing" -> dh ++ blp
+                  "xor" -> xor
+                  "multiset" -> multiset
+                  "natural-numbers" -> natNum
                   _ -> error $ "unsupported builtin: " ++ str)
          where 
-           dh = [
+           x = FolVar ("x", FolSortMsg)
+           y = FolVar ("y", FolSortMsg)
+           z = FolVar ("z", FolSortMsg)
+
+           sk = FolVar ("sk", FolSortMsg)
+           m = FolVar ("m", FolSortMsg)
+           pk l = folApp (MsgSymbol (NoEq pkSym)) [l]
+           true = folApp (MsgSymbol (NoEq trueSym)) []
+
+           asym = [ adec (aenc m (pk sk)) sk ~~ m ]
+             where 
+               adec l r = folApp (MsgSymbol (NoEq adecSym)) [l,r]
+               aenc l r = folApp (MsgSymbol (NoEq aencSym)) [l,r]
+
+           signing =  [ verify (sign m sk) m (pk sk) ~~ true ]
+             where
+               sign l r = folApp (MsgSymbol (NoEq signSym)) [l,r]
+               verify a0 a1 a2 = folApp (MsgSymbol (NoEq verifySym)) [a0, a1, a2]
+
+           revSigning =  [ 
+               revealVerify (revealSign m sk) m (pk sk) ~~ true
+             , getMessage (revealSign m sk) ~~ m
+             ]
+             where
+               revealSign l r = folApp (MsgSymbol (NoEq revealSignSym)) [l,r]
+               revealVerify a0 a1 a2 = folApp (MsgSymbol (NoEq revealVerifySym)) [a0, a1, a2]
+               getMessage l = folApp (MsgSymbol (NoEq extractMessageSym)) [l]
+               -- TODO try extractMessageSym -> extractMessage
+
+
+           sym = [ sdec (senc m k) k ~~ m ]
+             where k = FolVar ("k", FolSortMsg)
+                   sdec l r = folApp (MsgSymbol (NoEq sdecSym)) [l,r]
+                   senc l r = folApp (MsgSymbol (NoEq sencSym)) [l,r]
+
+           dh = ac (*) ++ [
                (x ^ y) ^ z  ~~ x ^ (y * z)
              ,  x ^ one     ~~ x
-             ,  x * y       ~~ y * x
-             ,  (x * y) * z ~~ x * (y * z)
              ,  x * one     ~~ x
              ,  x * inv x   ~~ one
              ]
+           (*) l r = folApp (MsgSymbol (AC Mult)) [l,r]
+           (^) l r = folApp (MsgSymbol (NoEq expSym)) [l,r]
+           inv t = folApp (MsgSymbol (NoEq invSym)) [t]
+           one = folApp (MsgSymbol (NoEq oneSym)) []
+
            blp = [
                pmult x (pmult y p) ~~ pmult (x*y) p
              , pmult one p           ~~ p
              , em p q              ~~ em q p
              , em (pmult x p) q    ~~ pmult x (em q p)
              ]
+             where 
+               p = FolVar ("p", FolSortMsg)
+               q = FolVar ("q", FolSortMsg)
+               pmult l r = folApp (MsgSymbol (NoEq pmultSym)) [l,r]
+               em l r = folApp (MsgSymbol (C EMap)) [l,r]
 
-           x = FolVar ("x", FolSortMsg)
-           y = FolVar ("y", FolSortMsg)
-           z = FolVar ("z", FolSortMsg)
-           p = FolVar ("p", FolSortMsg)
-           q = FolVar ("q", FolSortMsg)
-           (*) l r = folApp (MsgSymbol (AC Mult)) [l,r]
-           (^) l r = folApp (MsgSymbol (NoEq expSym)) [l,r]
-           inv t = folApp (MsgSymbol (NoEq invSym)) [t]
-           one = folApp (MsgSymbol (NoEq oneSym)) []
-           pmult l r = folApp (MsgSymbol (NoEq pmultSym)) [l,r]
-           em l r = folApp (MsgSymbol (C EMap)) [l,r]
+           ac (<>) = [
+                 x <> y        ~~ y <> x
+               , x <> (y <> z) ~~ (x <> y) <> z
+             ]
+           xor = ac (<+>) ++ [
+               x <+> zero      ~~ x
+             , x <+> x         ~~ zero
+             ]
+           infix 6 <+>
+           (<+>) l r = folApp (MsgSymbol (AC Xor)) [l, r]
+           zero = folApp (MsgSymbol (NoEq zeroSym)) []
 
+           multiset = ac union 
+           union l r = folApp (MsgSymbol (AC Union)) [l, r]
+
+           natNum = ac (%+) ++ [
+               allQ [n] $ exQ [m,o] $ nat n ~~ nat m %+ nat o
+             , allQ [m,o] $ exQ [n] $ nat n ~~ nat m %+ nat o  
+             ]
+             where 
+               nat t = folApp FolFuncVarNat [t]
+               (%+) l r = folApp (MsgSymbol (AC NatPlus)) [l, r]
+               n = FolVar ("n", FolSortNat)
+               m = FolVar ("m", FolSortNat)
+               o = FolVar ("o", FolSortNat)
 
 
 universalClosure :: FolFormula -> FolFormula
-universalClosure f = allQ (Data.Set.toList $ freeVars f) f
+universalClosure f = allQ (fmap FolVar $ Data.Set.toList $ freeVars f) f
 
 freeVars :: FolFormula -> Set FolVar
 freeVars (FolAtom t) = Data.Set.fromList $ varSet t
@@ -732,9 +785,10 @@ toFolFormula temp qs (Qua q (v,s) f) = FolQua q (v, s') (toFolFormula temp ((v, 
 toFolSort :: TempTranslation -> LSort -> FolSort
 toFolSort _ LSortPub   = error $ "unreachable"
 toFolSort _ LSortFresh = error $ "unreachable"
+toFolSort _ LSortNat   = error $ "unreachable"
 toFolSort _ LSortMsg =  FolSortMsg
 toFolSort temp LSortNode = tempSort temp
-toFolSort _ srt@LSortNat =  error $ "unexpected sort: " ++ show srt
+-- toFolSort _ srt@LSortNat = error $ "unexpected sort: " ++ show srt
 
 class PVar a where
   type PVarCtx a
@@ -752,8 +806,9 @@ instance PVar LVar where
 
   varFromContext temp () (LVar n sort idx) 
     = case sort of 
-        LSortPub   -> folApp FolFuncPub   [FolVar (name, FolSortNat)]
-        LSortFresh -> folApp FolFuncFresh [FolVar (name, FolSortNat)]
+        LSortPub   -> folApp FolFuncVarPub   [FolVar (name, FolSortNat)]
+        LSortFresh -> folApp FolFuncVarFresh [FolVar (name, FolSortNat)]
+        LSortNat   -> folApp FolFuncVarNat   [FolVar (name, FolSortNat)]
         _          -> FolVar (name, toFolSort temp sort)
       where name = if idx  == 0 then "v_" ++ n else "v_" ++ n ++ "_" ++ show idx
 
@@ -792,8 +847,8 @@ toFolAtom _ _ (Syntactic s) = error $ "unexpected syntactic sugar: " ++ show s
 toFolTerm :: PVar v => TempTranslation -> PVarCtx v -> VTerm Name v -> FolTerm
 toFolTerm temp _ (LIT (Con (Name tag id))) 
   = case tag of 
-     FreshName -> folApp FolFuncFresh [folApp (FolFuncLiteral id FolSortNat) []]
-     PubName   -> folApp FolFuncPub   [folApp (FolFuncLiteral id FolSortNat) []]
+     FreshName -> folApp FolFuncVarFresh [folApp (FolFuncLiteral id FolSortNat) []]
+     PubName   -> folApp FolFuncVarPub   [folApp (FolFuncLiteral id FolSortNat) []]
      NodeName  -> folApp (FolFuncLiteral id (tempSort temp)) []
      NatName   -> folApp (FolFuncLiteral id FolSortNat     ) []
 -- toFolTerm _ _ (LIT (Con c)) = error $ "unexpected literal constant: " ++ show c
