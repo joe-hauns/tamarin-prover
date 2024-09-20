@@ -10,12 +10,14 @@ module Main.Mode.Batch.ToSmtlib (
     toSmtlib
   , toFolProblem
   , outputNice
+  , outputSmt
   , TempTranslation(..)
   ) where
 
 import Items.OpenTheoryItem
 import TheoryObject
-import Text.PrettyPrint
+-- import Text.PrettyPrint
+import Prettyprinter
 import Prelude hiding ((<>))
 import Theory.Model
 import Control.Exception
@@ -28,6 +30,8 @@ import Theory
 import Data.Set
 import Term.SubtermRule 
 import Control.Monad
+
+type FolName = String
 
 data Smtlib = Smtlib
   deriving (Show)
@@ -96,7 +100,7 @@ msgFuncIdPrivacy (NoEq (_, (_, priv, _constr))) = priv
 msgFuncIdPrivacy (AC ac) = Public
 msgFuncIdPrivacy (C EMap) = Public
 
-msgFuncIdName :: MsgFuncId -> String
+msgFuncIdName :: MsgFuncId -> FolName
 msgFuncIdName (NoEq (name, (_, _, _constr))) = "u_" ++ BS.unpack name
 msgFuncIdName (AC ac) = "ac_" ++ show ac
 msgFuncIdName (C EMap) = "emap"
@@ -143,8 +147,8 @@ data FolTerm = FolApp FolFuncId [FolTerm]
 
 folApp :: FolFuncId -> [FolTerm] -> FolTerm
 folApp f as | argSorts == expArgSorts = FolApp f as
-            | otherwise = error $ "trying to apply " ++ render (toDoc f) ++ ": " ++ show expArgSorts
-             ++ " to args " ++ intercalate "," (render . toDoc <$> as) ++ " (sorts: " ++ show argSorts ++ ")"
+            | otherwise = error $ "trying to apply " ++ show (toDoc f) ++ ": " ++ show expArgSorts
+             ++ " to args " ++ intercalate "," (show . toDoc <$> as) ++ " (sorts: " ++ show argSorts ++ ")"
   where expArgSorts = fst . folFuncSig $ f
         argSorts    = sortOf <$> as
  
@@ -172,7 +176,7 @@ data FolSignature = FolSignature {
   }
   deriving (Show)
 
-sortName :: FolSort -> String
+sortName :: FolSort -> FolName
 sortName FolSortMsg = "msg"
 sortName FolSortNat = "nat"
 sortName FolSortRat = "rat"
@@ -183,6 +187,8 @@ sortName FolSortLin = "lin"
 sortName FolSortPer = "per"
 sortName FolSortAct = "act"
 
+-- data Namespaced = 
+
 data TempTranslation = TempRat | TempNat | TempAbstract
   deriving (Show,Ord,Eq)
 
@@ -191,88 +197,200 @@ tempSort TempRat = FolSortRat
 tempSort TempNat = FolSortNat
 tempSort TempAbstract = FolSortTemp
 
+class ToSmt a where
+  toSmt :: a -> Doc b
+
+instance ToSmt FolSort where
+  toSmt = pretty . sortName -- TODO namespacing? escaping?
+
+instance ToSmt FolFuncId where
+  toSmt = pretty . folFuncName -- TODO namespacing? escaping?
+
+instance ToSmt FolTerm where
+  toSmt (FolVar (v, _)) = pretty v  -- TODO namespacing? escaping?
+  toSmt (FolApp f ts) = parens $ toSmt f <+> align (hsep $ fmap toSmt ts)
+
+  -- toSmt (FolApp f ts) = vcat $
+  --   [pretty "("] ++ intersperse (pretty " ") (toSmt f : fmap toSmt ts) ++ [ pretty ")" ]
+
+instance ToSmt Quantifier where
+  toSmt All = pretty "forall"
+  toSmt Ex  = pretty "exists"
+
+instance ToSmt Connective where
+  toSmt And = pretty "and"
+  toSmt Or  = pretty "or"
+  toSmt Imp = pretty "=>"
+  toSmt Iff = pretty "="
+
+instance ToSmt Bool where
+  toSmt True  = pretty "true"
+  toSmt False = pretty "false"
+
+collectQPrefix q f 
+  = case f of 
+     (FolQua q' v f') | q' == q -> 
+        let (vs, f'') = collectQPrefix q f'
+        in (v:vs, f'')
+     _ -> ([], f)
+
+instance ToSmt FolFormula where
+  toSmt (FolAtom t) = toSmt t
+  toSmt (FolBool t) = toSmt t
+  toSmt (FolNot t) = parens $ pretty "not" <+> toSmt t
+  toSmt (FolConnMultiline And []) = toSmt $ FolBool True
+  toSmt (FolConnMultiline Or []) = toSmt $ FolBool False
+  toSmt (FolConnMultiline c fs) = parens $ toSmt c <+> align (sep $ toSmt <$> fs) 
+
+  toSmt (FolConn c s t) = parens $ hsep [toSmt c, toSmt s, toSmt t]
+
+  toSmt f@(FolQua q _ _) = parens $ hsep [toSmt q, qvars, toSmt f']
+    where (vs, f') = collectQPrefix q f
+          qvars = parens $ align $ vsep [ parens $ hsep [pretty v, toSmt s] | (v, s) <- vs ] -- TODO escaping and so of var name
+
+-- TODO rule
+instance ToSmt FolRule where
+  toSmt (FolRule name ps as cs) =
+    pretty ("rule " ++ name ++ ": ")
+      <> fToSmt ps <+> pretty "--" <> fToSmt as <> pretty "->" <+> fToSmt cs
+      where fToSmt [] = pretty "[]"
+            fToSmt fs  = foldl1 (<>) $
+                 [pretty "[ "]
+              ++ intersperse (pretty ", ") (toSmt <$> fs)
+              ++ [pretty " ]"]
+
+
+isBuiltinSort :: FolSort -> Bool
+isBuiltinSort _ = False -- TODO
+
+isBuiltinFun :: FolFuncId -> Bool
+isBuiltinFun _ = False -- TODO
+
+smtItem s as = parens $ hsep (pretty s : as)
+-- TODO inductive datatyps
+instance ToSmt FolSignature where
+  toSmt (FolSignature sorts funcs) = vcat $
+      [ smtItem "declare-sort" [ toSmt s, pretty "0" ] | s <- sorts, not (isBuiltinSort s) ]
+   ++ [ smtItem "declare-const" [ toSmt f, toSmt a ] 
+                   | f <- funcs
+                   , let (as, a) = folFuncSig f 
+                   , as == [] 
+                   , not (isBuiltinFun f)]
+   ++ [ smtItem "declare-fun" [ toSmt f, parens $ hsep $ fmap toSmt as, toSmt a ] 
+                   | f <- funcs
+                   , let (as, a) = folFuncSig f 
+                   , as /= [] 
+                   , not (isBuiltinFun f)]
+
+
+  --     hsep (pretty "sorts: " : (toSmt <$> sorts))
+  --   , vcat [ pretty "funcs:"
+  --          , nest 5 (vcat [ pretty $ "  " ++ folFuncName f ++ ": " ++ ty (folFuncSig f) | f <- funcs
+  --          ])
+  --     ]
+  --   ]
+  --     where ty ([], r) = sortName r
+  --           ty ([a], r) = sortName a ++ " -> " ++ sortName r
+  --           ty (as, r) = "(" ++ intercalate ", " (sortName <$> as) ++ ") -> " ++ sortName r
+
+-- TODO add asserts
+instance ToSmt FolProblem where
+  toSmt p = vcat $ intersperse (pretty "")
+     [ toSmt (folSignature p)
+     , nestedforms "assumption" folAssumptions 
+     , nestedforms "goal" folGoals
+     ]
+     where nestedforms title fs = 
+              align $ nest 5  (vcat $ intersperse emptyDoc [ 
+                nest 5 $ align $ vcat [
+                  pretty ";-" <+> pretty title <> pretty ":" <+> t
+                , toSmt f
+                ]  | (t, f) <- fs p ])
+
+
 class ToDoc a where
-  toDoc :: a -> Doc
+  toDoc :: a -> Doc b
 
 instance ToDoc FolSort where
-  toDoc = text . sortName
+  toDoc = pretty . sortName
 
 instance ToDoc FolFuncId where
-  toDoc = text . folFuncName
+  toDoc = pretty . folFuncName
 
 instance ToDoc FolTerm where
-  toDoc (FolVar (v, _)) = text v
+  toDoc (FolVar (v, _)) = pretty v
+  toDoc (FolApp f []) = toDoc f
   toDoc (FolApp f ts) = foldl1 (<>) $
-    [ toDoc f, text "("]
-    ++ intersperse (text ",") (fmap toDoc ts)
-    ++ [ text ")" ]
+    [ toDoc f, pretty "("]
+    ++ intersperse (pretty ",") (fmap toDoc ts)
+    ++ [ pretty ")" ]
 
 instance ToDoc Quantifier where
-  toDoc All = text "∀"
-  toDoc Ex  = text "∃"
-
-conStr :: Connective -> String
-conStr And = "/\\"
-conStr Or = "\\/"
-conStr Imp = "->"
-conStr Iff = "<->"
+  toDoc All = pretty "∀"
+  toDoc Ex  = pretty "∃"
 
 instance ToDoc Connective where
-  toDoc = text . conStr
+  toDoc = pretty . conStr
 
 instance ToDoc FolFormula where
   toDoc (FolAtom t) = toDoc t
-  toDoc (FolBool t) = text $ show t
-  toDoc (FolNot t) = text "~" <> toDoc t
+  toDoc (FolBool t) = pretty $ show t
+  toDoc (FolNot t) = pretty "~" <> toDoc t
   toDoc (FolConnMultiline And []) = toDoc $ FolBool True
   toDoc (FolConnMultiline Or []) = toDoc $ FolBool False
   toDoc (FolConnMultiline c fs) = sep (zipWith (<+>) ops (toDoc <$> fs))
-    where ops = text (' ' <$ conStr c) : repeat (toDoc c)
+    where ops = pretty (' ' <$ conStr c) : repeat (toDoc c)
 
-  toDoc (FolConn c s t) = text "(" <> toDoc s <+> toDoc c <+> toDoc t <> text ")"
+  toDoc (FolConn c s t) = pretty "(" <> toDoc s <+> toDoc c <+> toDoc t <> pretty ")"
 
-  toDoc (FolQua q (v, s) f) = toDoc q <> text v <> text ":" <+> toDoc s <> text "(" <> toDoc f <> text ")"
+  toDoc (FolQua q (v, s) f) = toDoc q <> pretty v <> pretty ":" <+> toDoc s <> pretty "(" <> toDoc f <> pretty ")"
 
 instance ToDoc FolGoal where
   toDoc (FolGoal name formula) =
-    text ("goal " ++ name ++ ":") <+> toDoc formula
+    pretty ("goal " ++ name ++ ":") <+> toDoc formula
 
 instance ToDoc FolRule where
   toDoc (FolRule name ps as cs) =
-    text ("rule " ++ name ++ ": ")
-      <> fToDoc ps <+> text "--" <> fToDoc as <> text "->" <+> fToDoc cs
-      where fToDoc [] = text "[]"
+    pretty ("rule " ++ name ++ ": ")
+      <> fToDoc ps <+> pretty "--" <> fToDoc as <> pretty "->" <+> fToDoc cs
+      where fToDoc [] = pretty "[]"
             fToDoc fs  = foldl1 (<>) $
-                 [text "[ "]
-              ++ intersperse (text ", ") (toDoc <$> fs)
-              ++ [text " ]"]
+                 [pretty "[ "]
+              ++ intersperse (pretty ", ") (toDoc <$> fs)
+              ++ [pretty " ]"]
 
 
 
 instance ToDoc FolSignature where
   toDoc (FolSignature sorts funcs) = vcat [
-      hsep (text "sorts: " : (toDoc <$> sorts))
-    , text "funcs:" $$ nest 5 (vcat [
-      text $ "  " ++ folFuncName f ++ ": " ++ ty (folFuncSig f) | f <- funcs
-    ])
+      hsep (pretty "sorts: " : (toDoc <$> sorts))
+    , vcat [ pretty "funcs:",  nest 5 (vcat [
+      pretty $ "  " ++ folFuncName f ++ ": " ++ ty (folFuncSig f) | f <- funcs
+    ])]
     ]
       where ty ([], r) = sortName r
             ty ([a], r) = sortName a ++ " -> " ++ sortName r
             ty (as, r) = "(" ++ intercalate ", " (sortName <$> as) ++ ") -> " ++ sortName r
 
 instance ToDoc FolProblem where
-  toDoc p = vcat $ intersperse (text "")
-     [ text "signature:" $$ nest 5 (toDoc (folSignature p))
+  toDoc p = vcat $ intersperse (pretty "")
+     [ vcat [ pretty "signature:", nest 5 (toDoc (folSignature p)) ]
      , nestedforms "assumptions:" folAssumptions 
      , nestedforms "goals:" folGoals
      ]
-     where nestedforms title fs =  text title $$ nest 5
-            (vcat $ intersperse (text "") [ t $$ nest 5 (toDoc f)  | (t, f) <- fs p ])
+     where nestedforms title fs =  vcat [ 
+               pretty title
+             , nest 5 (vcat $ intersperse (pretty "") [ vcat [ t, nest 5 (toDoc f) ]  | (t, f) <- fs p ]) ]
 
 
 uniq :: (Ord a, Eq a) => [a] -> [a]
 uniq = Data.Set.toList . Data.Set.fromList
 
+conStr :: Connective -> String
+conStr And = "/\\"
+conStr Or = "\\/"
+conStr Imp = "->"
+conStr Iff = "<->"
 
 folSignature :: FolProblem -> FolSignature
 folSignature p = FolSignature (uniq $ forms >>= sorts) (uniq $ forms >>= funcs)
@@ -300,14 +418,14 @@ folSignature p = FolSignature (uniq $ forms >>= sorts) (uniq $ forms >>= funcs)
         funcs' (FolVar _) = []
         funcs' (FolApp fid fs) = fid : (funcs' =<< fs)
 
-folAssumptions :: FolProblem -> [(Doc, FolFormula)]
+folAssumptions :: FolProblem -> [(Doc ann, FolFormula)]
 folAssumptions (FolProblem temp rules _ msgSyms eq) =
      [ (toDoc r, translateRule r) | r <- rules ++ mdRules ]
-  ++ [ (text "start condition", startCondition)
-     , (text "transition relation", transitionRelation)
-     , (text "addition definition", addDef)
+  ++ [ (pretty "start condition", startCondition)
+     , (pretty "transition relation", transitionRelation)
+     , (pretty "addition definition", addDef)
      ]
-  ++ [ (text "equation theory:", mlConj eq) ]
+  ++ [ (pretty "equation theory:", mlConj eq) ]
   where 
     mdRules :: [FolRule]
     mdRules = [
@@ -464,12 +582,15 @@ folAssumptions (FolProblem temp rules _ msgSyms eq) =
                    TempNat -> zeroT
                    TempRat -> literalQT 0
 
-folGoals :: FolProblem -> [(Doc, FolFormula)]
-folGoals (FolProblem _ _ goals _ _) = [ (text name, form) | FolGoal name form <- goals ]
+folGoals :: FolProblem -> [(Doc ann, FolFormula)]
+folGoals (FolProblem _ _ goals _ _) = [ (pretty name, form) | FolGoal name form <- goals ]
 
+
+outputSmt :: ToSmt a => a -> IO ()
+outputSmt = putStr . show . toSmt
 
 outputNice :: ToDoc a => a -> IO ()
-outputNice = putStr . render . toDoc 
+outputNice = putStr . show . toDoc 
 
 
 (/\) :: FolFormula -> FolFormula  -> FolFormula
@@ -539,14 +660,13 @@ data FolRule = FolRule {
     }
     deriving (Show,Eq,Ord)
 
-
 folFactTagName (FolFactUser _ name _) = "f_" ++ name
 folFactTagName FolFactFresh = "Fr"
 folFactTagName FolFactOut  = "Out"
 folFactTagName FolFactIn = "In"
 folFactTagName FolFactKnown = "K"
 
-folFuncTuple :: FolFuncId -> (String, [FolSort], FolSort)
+folFuncTuple :: FolFuncId -> (FolName, [FolSort], FolSort)
 folFuncTuple (End temp) = ("end", [tempSort temp], FolSortBool)
 folFuncTuple (MsgSymbol s) = (msgFuncIdName s, [FolSortMsg | _ <- [1..msgFuncIdArity s]], FolSortMsg)
 folFuncTuple (FolFuncAct tag) = ("a_" ++ folFactTagName tag, [FolSortMsg | _ <- [1..folFactTagArity tag]], FolSortAct)
@@ -556,7 +676,7 @@ folFuncTuple (FolFuncFact tag) = (folFactTagName tag, [FolSortMsg | _ <- [1..fol
 folFuncTuple (FolEq s) = ("=", [s, s], FolSortBool)
 folFuncTuple (FolTempLess temp) = ("tempLess", [tempSort temp, tempSort temp], FolSortBool)
 folFuncTuple FolNatSucc = ("s", [FolSortNat], FolSortNat)
-folFuncTuple FolNatZero = ("0", [], FolSortNat)
+folFuncTuple FolNatZero = ("zero", [], FolSortNat)
 folFuncTuple FolNatAdd = ("add", [FolSortNat, FolSortNat], FolSortNat)
 folFuncTuple FolPredPre = ("Pre", [FolSortRule, FolSortPer], FolSortBool)
 folFuncTuple FolPredCon = ("Con", [FolSortRule, FolSortPer], FolSortBool)
@@ -586,9 +706,9 @@ folFuncSig f = let (_, as, r) = folFuncTuple f in (as, r)
 folFuncArity :: FolFuncId -> Int
 folFuncArity = length . fst . folFuncSig
 
-assertEq :: (Show a, Eq a) => a -> a -> String -> Bool
-assertEq l r name | l == r    = True
-                  | otherwise = error ("expected " ++ name ++ " == " ++ show l ++ ". is: " ++ show r)
+-- assertEq :: (Show a, Eq a) => a -> a -> String -> Bool
+-- assertEq l r name | l == r    = True
+--                   | otherwise = error ("expected " ++ name ++ " == " ++ show l ++ ". is: " ++ show r)
 
 assertEmpty :: Show a => [a] -> String -> Bool
 assertEmpty [] _name = True
@@ -762,7 +882,7 @@ freeVars (FolQua _ v f) =  freeVars f \\ singleton v
 stRuleToFormula :: TempTranslation -> CtxtStRule -> FolFormula
 stRuleToFormula temp (CtxtStRule lhs (StRhs _pos rhs)) = universalClosure $ toFolTerm temp () lhs ~~ toFolTerm temp () rhs
 
--- TODO test file with non context rewrite rules
+-- TODO test file wit exstis-trace
 
 data FolGoal = FolGoal String FolFormula
   deriving (Show)
