@@ -127,16 +127,20 @@ type MsgFuncId = FunSym
 -- folFuncTuple (MsgSymbol (C EMap)) = error "EMap message not supported (yet)"
 -- folFuncTuple (MsgSymbol List) = error "List message not supported (yet)"
 
+unsupportedFile :: String -> a
+unsupportedFile msg = error ("unsupported file: " ++ msg)
 
 msgFuncIdPrivacy :: MsgFuncId -> Privacy
 msgFuncIdPrivacy (NoEq (_, (_, priv, _constr))) = priv
-msgFuncIdPrivacy (AC ac) = Public
+msgFuncIdPrivacy (AC _) = Public
 msgFuncIdPrivacy (C EMap) = Public
+msgFuncIdPrivacy s@List = unsupportedFile ("sort " ++ show s ++ " is not supported")
 
 msgFuncIdName :: MsgFuncId -> FolIdent
 msgFuncIdName (NoEq (name, (_, _, _constr))) = FolIdentUserMsg $ BS.unpack name
 msgFuncIdName (AC ac) = FolIdentAC $ show ac
 msgFuncIdName (C EMap) = FolIdentEmap
+msgFuncIdName s@List = unsupportedFile ("sort " ++ show s ++ " is not supported")
 
 msgFuncIdArity :: MsgFuncId -> Int
 msgFuncIdArity (NoEq (_, (arity, _, _constr))) = arity
@@ -287,15 +291,8 @@ instance ToSmt FolFormula where
           toSmt' = pretty . identToStr . FolIdentUserVar
 
 instance ToSmt FolRule where
-  toSmt (FolRule name ps as cs) =
+  toSmt (FolRule name _ _ _) =
     pretty ("rule " ++ identToStr name ++ ":")
-      -- <> fToSmt ps <+> pretty "--" <> fToSmt as <> pretty "->" <+> fToSmt cs
-      -- where fToSmt [] = pretty "[]"
-      --       fToSmt fs  = sep $
-      --            [pretty "[ "]
-      --         ++ intersperse (pretty ", ") (toSmt <$> fs)
-      --         ++ [pretty " ]"]
-
 
 isBuiltinSmtSort :: FolSort -> Bool
 isBuiltinSmtSort FolSortBool = True
@@ -334,8 +331,6 @@ isConstructor FolFuncCon                 = False
 isConstructor FolFuncEquals              = False
 isConstructor (FolPredLab _)             = False
 
-folFuncDom = snd . folFuncSig
-parH = parens . hsep
 smtItem s as = parens $ hsep (pretty s : as)
 instance ToSmt FolSignature where
   toSmt (FolSignature sorts funcs) = vcat $ intersperse emptyDoc [
@@ -360,6 +355,7 @@ instance ToSmt FolSignature where
                                      , isConstructor f
                                      , folFuncDom f == s
                                      ]
+           parH = parens . hsep
            iSorts = filter isInductive sorts
            sortConstructors s i = align $ vsep $
                 [ pretty ";-" <+>  toSmt s <> pretty ":" <+> sortDescription s ] 
@@ -788,6 +784,9 @@ folFuncName f = let (n, _, _) = folFuncTuple f in n
 folFuncSig :: FolFuncId -> ([FolSort], FolSort)
 folFuncSig f = let (_, as, r) = folFuncTuple f in (as, r)
 
+folFuncDom :: FolFuncId -> FolSort
+folFuncDom = snd . folFuncSig
+
 folFuncArity :: FolFuncId -> Int
 folFuncArity = length . fst . folFuncSig
 
@@ -800,8 +799,8 @@ assertEmpty [] _name = True
 assertEmpty xs name = error ("expected " ++ name ++ " to be empty. is: " ++ show xs)
 
 unsupportedNonEmpty :: Show a => [a] -> String -> Bool
-unsupportedNonEmpty [] _name = True
-unsupportedNonEmpty xs name = error ("unsupported file: " ++ name)
+unsupportedNonEmpty [] _ = True
+unsupportedNonEmpty _ msg = unsupportedFile msg
 
 
 toFolRules :: TempTranslation -> [TheoryItem OpenProtoRule p s] -> [FolRule]
@@ -835,8 +834,7 @@ toFolRules temp = mapMaybe toRule
 assertEmptyS x = assertEmpty (Data.Set.toList x)
 
 getTag :: LNFact -> FactTag
-getTag (Fact tag factAnnotations _factTerms)
- | assertEmptyS factAnnotations "factAnnotations" = tag
+getTag (Fact tag _ _factTerms) = tag
 
 infix 5 ~~
 infixl 4 /\
@@ -989,21 +987,21 @@ toFolRestriction temp (RestrictionItem (Restriction name formula)) = Just (FolRe
 toFolRestriction _ _ = Nothing
 
 
-type QuantScope = [FolVar]
+type QuantScope = [(String, LSort)]
 
 toFolFormula :: TempTranslation -> QuantScope -> LNFormula -> FolFormula
 toFolFormula temp qs (Ato a) = toFolAtom temp qs a
 toFolFormula _ _ (TF x) = FolBool x
 toFolFormula temp qs (Not x) = FolNot (toFolFormula temp qs x)
 toFolFormula temp qs (Conn c l r) = FolConn c (toFolFormula temp qs l) (toFolFormula temp qs r)
-toFolFormula temp qs (Qua q (v,s) f) = FolQua q (v, s') (toFolFormula temp ((v, s'):qs) f)
+toFolFormula temp qs (Qua q (v,s) f) = FolQua q (v, s') (toFolFormula temp ((v, s):qs) f)
   where s' = toFolSort temp s
 
 toFolSort :: TempTranslation -> LSort -> FolSort
-toFolSort _ LSortPub   = error $ "unreachable"
-toFolSort _ LSortFresh = error $ "unreachable"
-toFolSort _ LSortNat   = error $ "unreachable"
-toFolSort _ LSortMsg =  FolSortMsg
+toFolSort _ LSortPub   = FolSortNat
+toFolSort _ LSortFresh = FolSortNat
+toFolSort _ LSortNat   = FolSortNat
+toFolSort _ LSortMsg   = FolSortMsg
 toFolSort temp LSortNode = tempSort temp
 -- toFolSort _ srt@LSortNat = error $ "unexpected sort: " ++ show srt
 
@@ -1015,27 +1013,35 @@ class PVar a where
 instance PVar (BVar LVar) where
   type PVarCtx (BVar LVar) = QuantScope
 
-  varFromContext _ qs (Bound deBrujinIdx) = FolVar (qs `genericIndex` deBrujinIdx)
+  varFromContext temp qs (Bound deBrujinIdx) = lvarToFolVar temp v
+    where v = qs `genericIndex` deBrujinIdx
+          
   varFromContext temp _ (Free v) = varFromContext temp () v
+
+lvarToFolVar :: TempTranslation -> (String, LSort) -> FolTerm
+lvarToFolVar temp (name, sort) =
+     case sort of
+        LSortPub   -> folApp FolFuncVarPub   [FolVar (name, FolSortNat)]
+        LSortFresh -> folApp FolFuncVarFresh [FolVar (name, FolSortNat)]
+        LSortNat   -> folApp FolFuncVarNat   [FolVar (name, FolSortNat)]
+        _   -> FolVar (name, toFolSort temp sort)
 
 instance PVar LVar where
   type PVarCtx LVar = ()
 
   varFromContext temp () (LVar n sort idx)
-    = case sort of
-        LSortPub   -> folApp FolFuncVarPub   [FolVar (name, FolSortNat)]
-        LSortFresh -> folApp FolFuncVarFresh [FolVar (name, FolSortNat)]
-        LSortNat   -> folApp FolFuncVarNat   [FolVar (name, FolSortNat)]
-        _          -> FolVar (name, toFolSort temp sort)
+    = lvarToFolVar temp (name, sort)
+    -- = case sort of
+    --     LSortPub   -> folApp FolFuncVarPub   [FolVar (name, FolSortNat)]
+    --     LSortFresh -> folApp FolFuncVarFresh [FolVar (name, FolSortNat)]
+    --     LSortNat   -> folApp FolFuncVarNat   [FolVar (name, FolSortNat)]
+    --     LSortMsg   -> FolVar (name, toFolSort temp sort)
       where name = if idx  == 0 then n else n ++ "." ++ show idx
 
 
 
 factOrActT :: PVar v => (FolFactTag -> FolFuncId) -> TempTranslation -> PVarCtx v -> Fact (VTerm Name v) -> FolTerm
-factOrActT toFuncId temp qs (Fact tag factAnnotations terms)
- | assertEmptyS factAnnotations "factAnnotations"
-   = folApp (toFuncId (toFolFactTag tag)) (toFolTerm temp qs <$> terms)
- | otherwise = error "unreachable"
+factOrActT toFuncId temp qs (Fact tag _annot terms) = folApp (toFuncId (toFolFactTag tag)) (toFolTerm temp qs <$> terms)
 
 factT :: PVar v => TempTranslation -> PVarCtx v -> Fact (VTerm Name v) -> FolTerm
 factT = factOrActT FolFuncFact
@@ -1061,9 +1067,11 @@ toFolAtom temp@TempNat qs (Less s t) = exQ [d] (succT (addT (toFolTerm temp qs s
   where d = FolVar ("d_", FolSortNat)
         addT  = fun2 FolNatAdd
         succT = fun1 FolNatSucc
-toFolAtom _ _ t@(Subterm _ _) = error $ "unsupported atom " ++ show t
-toFolAtom _ _ t@(Last _) = error $ "unsupported atom " ++ show t
+toFolAtom _ _ t@(Subterm _ _) = unsupportedFile $ "unsupported atom " ++ show t
+toFolAtom _ _ t@(Last _)      = unsupportedFile $ "unsupported atom " ++ show t
 toFolAtom _ _ (Syntactic s) = error $ "unexpected syntactic sugar: " ++ show s
+
+-- TODO test literals name escaping
 
 toFolTerm :: PVar v => TempTranslation -> PVarCtx v -> VTerm Name v -> FolTerm
 toFolTerm temp _ (LIT (Con (Name tag id)))
