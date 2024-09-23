@@ -112,7 +112,7 @@ toFolFactTag (ProtoFact m s i) = FolFactUser m s i
 toFolFactTag FreshFact  = FolFactFresh
 toFolFactTag OutFact    = FolFactOut
 toFolFactTag InFact     = FolFactIn
-toFolFactTag f@KUFact   = unreachableErrMsg1 f
+toFolFactTag KUFact     = FolFactKnown
 toFolFactTag f@KDFact   = unreachableErrMsg1 f
 toFolFactTag f@DedFact  = unreachableErrMsg1 f
 toFolFactTag f@TermFact = unreachableErrMsg1 f
@@ -195,10 +195,14 @@ data FolFormula =
 data FolProblem = FolProblem {
     _fpTemp    :: TempTranslation
   , _fpRules   :: [FolRule]
+  , _fpRestr   :: [FolRestriction]
   , _fpGoal    :: FolGoal
   , _fpMsgCons :: [FunSym]
   , _fpEq      :: [FolFormula]
   }
+  deriving (Show)
+
+data FolRestriction = FolRestriction String FolFormula
   deriving (Show)
 
 data FolSignature = FolSignature {
@@ -516,13 +520,14 @@ folSignature p = FolSignature (uniq $ forms >>= sorts) (uniq $ forms >>= funcs)
         funcs' (FolApp fid fs) = fid : (funcs' =<< fs)
 
 folAssumptions :: FolProblem -> [(Doc ann, FolFormula)]
-folAssumptions (FolProblem temp rules _ msgSyms eq) =
+folAssumptions (FolProblem temp rules rs _ msgSyms eq) =
      [ (toDoc r, translateRule r) | r <- rules ++ mdRules ]
   ++ [ (pretty "start condition", startCondition)
      , (pretty "transition relation", transitionRelation)
      , (pretty "addition definition", addDef)
      ]
   ++ [ (pretty "equation theory:", mlConj eq) ]
+  ++ [ (pretty $ "restriction " ++ r, f) | (FolRestriction r f) <- rs ]
   where
     mdRules :: [FolRule]
     mdRules = [
@@ -673,7 +678,7 @@ folAssumptions (FolProblem temp rules _ msgSyms eq) =
                    TempNat -> zeroT
 
 folGoal :: FolProblem -> (Doc ann, FolFormula, TraceQuantifier)
-folGoal (FolProblem _ _ (FolGoal name form tq) _ _) = (pretty name, form, tq)
+folGoal (FolProblem _ _ _ (FolGoal name form tq) _ _) = (pretty name, form, tq)
 
 
 outputSmt :: ToSmt a => a -> IO ()
@@ -854,6 +859,7 @@ toFolProblem :: TempTranslation -> OpenTheory -> [FolProblem]
 toFolProblem temp th
   = fmap (\goal -> FolProblem temp
                (toFolRules temp $ _thyItems th)
+               (mapMaybe (toFolRestriction temp) $ _thyItems th)
                goal 
                (Data.Set.toList $ funSyms $ _sigMaudeInfo $ _thySignature th)
                (userEq ++ builtinEqs))
@@ -981,6 +987,10 @@ data FolGoal = FolGoal String FolFormula TraceQuantifier
 toFolGoal :: TempTranslation -> OpenTheoryItem -> Maybe FolGoal
 toFolGoal temp (LemmaItem (Lemma name tq formula _attributes _proof)) = Just (FolGoal name (toFolFormula temp [] formula) tq)
 toFolGoal _ _ = Nothing
+
+toFolRestriction :: TempTranslation -> OpenTheoryItem -> Maybe FolRestriction
+toFolRestriction temp (RestrictionItem (Restriction name formula)) = Just (FolRestriction name (toFolFormula temp [] formula))
+toFolRestriction _ _ = Nothing
 
 
 type QuantScope = [FolVar]
