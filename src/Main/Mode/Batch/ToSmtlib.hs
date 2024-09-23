@@ -29,7 +29,43 @@ import Data.Set hiding (filter)
 import Term.SubtermRule
 import Control.Monad
 
-type FolName = String
+data FolIdent = FolIdentUserMsg String
+              | FolIdentUserFact String
+              | FolIdentUserAction String
+              | FolIdentUserLiteral String
+              | FolIdentUserRule String
+              | FolIdentUserVar String
+              | FolIdentAC String
+              | FolIdentEmap
+              | FolIdentBuiltin String 
+              | FolIdentBuiltinRuleFresh
+              | FolIdentBuiltinRuleMd Int 
+              | FolIdentBuiltinRuleMdPubMessage FolIdent
+              | FolIdentEq
+              | FolIdentBool
+              | FolIdentSort String 
+    deriving (Show,Eq,Ord)
+-- type FolIdent = String
+
+identToStr :: FolIdent -> String
+-- user defined symbols start with $
+identToStr (FolIdentUserMsg s) = "$" ++ s
+identToStr (FolIdentUserFact s) = "$" ++ s ++ "$f"
+identToStr (FolIdentUserAction s) = "$" ++ s ++ "$a"
+identToStr (FolIdentUserLiteral s) = "$" ++ s ++ "$l"
+identToStr (FolIdentUserRule s) = "$" ++ s ++ "$r"
+identToStr (FolIdentUserVar s) = "$" ++ s
+-- translation builtins start with @
+identToStr (FolIdentBuiltin s) = "@" ++ s
+identToStr (FolIdentSort s)  = "@" ++ s
+identToStr (FolIdentAC s) = "@" ++ s ++ "@ac"
+identToStr FolIdentEmap = "@emap"
+identToStr FolIdentBuiltinRuleFresh = "@fresh@r"
+identToStr (FolIdentBuiltinRuleMd i) = "@md@" ++ show i
+identToStr (FolIdentBuiltinRuleMdPubMessage id) = "@md" ++ identToStr id
+-- smtlib builtins
+identToStr FolIdentEq = "="
+identToStr FolIdentBool = "Bool"
 
 data Smtlib = Smtlib
   deriving (Show)
@@ -97,10 +133,10 @@ msgFuncIdPrivacy (NoEq (_, (_, priv, _constr))) = priv
 msgFuncIdPrivacy (AC ac) = Public
 msgFuncIdPrivacy (C EMap) = Public
 
-msgFuncIdName :: MsgFuncId -> FolName
-msgFuncIdName (NoEq (name, (_, _, _constr))) = "u_" ++ BS.unpack name
-msgFuncIdName (AC ac) = "ac_" ++ show ac
-msgFuncIdName (C EMap) = "emap"
+msgFuncIdName :: MsgFuncId -> FolIdent
+msgFuncIdName (NoEq (name, (_, _, _constr))) = FolIdentUserMsg $ BS.unpack name
+msgFuncIdName (AC ac) = FolIdentAC $ show ac
+msgFuncIdName (C EMap) = FolIdentEmap
 
 msgFuncIdArity :: MsgFuncId -> Int
 msgFuncIdArity (NoEq (_, (arity, _, _constr))) = arity
@@ -171,15 +207,15 @@ data FolSignature = FolSignature {
   }
   deriving (Show)
 
-sortName :: FolSort -> FolName
-sortName FolSortMsg = "msg"
-sortName FolSortNat = "nat"
-sortName FolSortTemp = "temp"
-sortName FolSortBool = "bool"
-sortName FolSortRule = "rule"
-sortName FolSortLin = "lin"
-sortName FolSortPer = "per"
-sortName FolSortAct = "act"
+sortName :: FolSort -> FolIdent
+sortName FolSortMsg = FolIdentSort "msg"
+sortName FolSortNat = FolIdentSort "nat"
+sortName FolSortTemp = FolIdentSort "temp"
+sortName FolSortBool = FolIdentBool
+sortName FolSortRule = FolIdentSort "rule"
+sortName FolSortLin = FolIdentSort "lin"
+sortName FolSortPer = FolIdentSort "per"
+sortName FolSortAct = FolIdentSort "act"
 
 sortDescription :: FolSort -> Doc ann
 sortDescription FolSortMsg = pretty "messages"
@@ -190,8 +226,6 @@ sortDescription FolSortRule = pretty "rule sort"
 sortDescription FolSortLin = pretty "linear facts"
 sortDescription FolSortPer = pretty "persisten facts"
 sortDescription FolSortAct = pretty "actions (facts used as labels for rewrites)"
-
--- data Namespaced = 
 
 data TempTranslation = TempNat | TempAbstract
   deriving (Show,Ord,Eq)
@@ -204,20 +238,13 @@ class ToSmt a where
   toSmt :: a -> Doc b
 
 instance ToSmt FolSort where
-  toSmt FolSortMsg  = pretty "msg"
-  toSmt FolSortNat  = pretty "nat"
-  toSmt FolSortTemp = pretty "temp"
-  toSmt FolSortBool = pretty "Bool"
-  toSmt FolSortRule = pretty "rule"
-  toSmt FolSortLin  = pretty "lin"
-  toSmt FolSortPer  = pretty "per"
-  toSmt FolSortAct  = pretty "act"
+  toSmt = pretty . identToStr . sortName
 
 instance ToSmt FolFuncId where
-  toSmt = pretty . folFuncName -- TODO namespacing? escaping?
+  toSmt = pretty . identToStr . folFuncName
 
 instance ToSmt FolTerm where
-  toSmt (FolVar (v, _)) = pretty v  -- TODO namespacing? escaping?
+  toSmt (FolVar (v, _)) = pretty $ identToStr $ FolIdentUserVar v 
   toSmt (FolApp f ts) = parens $ toSmt f <+> align (hsep $ fmap toSmt ts)
 
 instance ToSmt Quantifier where
@@ -253,11 +280,12 @@ instance ToSmt FolFormula where
 
   toSmt f@(FolQua q _ _) = parens $ hsep [toSmt q, qvars, toSmt f']
     where (vs, f') = collectQPrefix q f
-          qvars = parens $ align $ vsep [ parens $ hsep [pretty v, toSmt s] | (v, s) <- vs ] -- TODO escaping and so of var name
+          qvars = parens $ align $ vsep [ parens $ hsep [toSmt' v, toSmt s] | (v, s) <- vs ]
+          toSmt' = pretty . identToStr . FolIdentUserVar
 
 instance ToSmt FolRule where
   toSmt (FolRule name ps as cs) =
-    pretty ("rule " ++ name ++ ":")
+    pretty ("rule " ++ identToStr name ++ ":")
       -- <> fToSmt ps <+> pretty "--" <> fToSmt as <> pretty "->" <+> fToSmt cs
       -- where fToSmt [] = pretty "[]"
       --       fToSmt fs  = sep $
@@ -381,10 +409,10 @@ class ToDoc a where
   toDoc :: a -> Doc b
 
 instance ToDoc FolSort where
-  toDoc = pretty . sortName
+  toDoc = pretty . identToStr . sortName
 
 instance ToDoc FolFuncId where
-  toDoc = pretty . folFuncName
+  toDoc = pretty . identToStr . folFuncName
 
 instance ToDoc FolTerm where
   toDoc (FolVar (v, _)) = pretty v
@@ -420,7 +448,7 @@ instance ToDoc FolGoal where
 
 instance ToDoc FolRule where
   toDoc (FolRule name _ _ _) =
-    pretty ("rule " ++ name)
+    pretty ("rule " ++ identToStr name)
       -- <> fToDoc ps <+> pretty "--" <> fToDoc as <> pretty "->" <+> fToDoc cs
       -- where fToDoc [] = pretty "[]"
       --       fToDoc fs  = foldl1 (<>) $
@@ -434,12 +462,13 @@ instance ToDoc FolSignature where
   toDoc (FolSignature sorts funcs) = vcat [
       hsep (pretty "sorts: " : (toDoc <$> sorts))
     , vcat [ pretty "funcs:",  nest 5 (vcat [
-      pretty $ "  " ++ folFuncName f ++ ": " ++ ty (folFuncSig f) | f <- funcs
+      pretty $ "  " ++ identToStr (folFuncName f) ++ ": " ++ ty (folFuncSig f) | f <- funcs
     ])]
     ]
-      where ty ([], r) = sortName r
-            ty ([a], r) = sortName a ++ " -> " ++ sortName r
-            ty (as, r) = "(" ++ intercalate ", " (sortName <$> as) ++ ") -> " ++ sortName r
+      where ty ([], r) = sname r
+            ty ([a], r) = sname a ++ " -> " ++ sname r
+            ty (as, r) = "(" ++ intercalate ", " (sname <$> as) ++ ") -> " ++ sname r
+            sname = identToStr . sortName
 
 instance ToDoc FolProblem where
   toDoc p = vcat $ intersperse (pretty "") 
@@ -497,12 +526,12 @@ folAssumptions (FolProblem temp rules _ msgSyms eq) =
   where
     mdRules :: [FolRule]
     mdRules = [
-          FolRule "md0" [  factOut x ] [         ] [ factK x  ]
-        , FolRule "md1" [  factK x   ] [  actK x ] [ factIn x ]
-        , FolRule "md2" [            ] [         ] [ factK (pubVarT fr) ]
-        , FolRule "md3" [  factFresh (freshVarT fr) ] [         ] [ factK (freshVarT fr) ]
+          FolRule (FolIdentBuiltinRuleMd 0) [  factOut x ] [         ] [ factK x  ]
+        , FolRule (FolIdentBuiltinRuleMd 1) [  factK x   ] [  actK x ] [ factIn x ]
+        , FolRule (FolIdentBuiltinRuleMd 2) [            ] [         ] [ factK (pubVarT fr) ]
+        , FolRule (FolIdentBuiltinRuleMd 3) [  factFresh (freshVarT fr) ] [         ] [ factK (freshVarT fr) ]
         ]
-        ++ [ FolRule ("md4_" ++ folFuncName fun)
+        ++ [ FolRule (FolIdentBuiltinRuleMdPubMessage (folFuncName fun))
                      [ factK x | x <- xs ] [] [ factK (folApp fun xs) ]
             | fun@(MsgSymbol s) <- fmap MsgSymbol msgSyms
             , msgFuncIdPrivacy s == Public
@@ -686,7 +715,6 @@ unFolVar :: FolTerm -> FolVar
 unFolVar (FolVar v) = v
 unFolVar _ = undefined
 
-
 aggregate :: a -> (a -> a -> a) -> [a] -> a
 aggregate start _ []  = start
 aggregate _ _ [x] = x
@@ -714,49 +742,49 @@ varSet :: FolTerm -> [FolVar]
 varSet = uniq . varList
 
 data FolRule = FolRule {
-      _frName   :: String
+      _frName   :: FolIdent
     , _frPrems  :: [FolTerm]
     , _frActs   :: [FolTerm]
     , _frConcls :: [FolTerm]
     }
     deriving (Show,Eq,Ord)
 
-folFactTagName (FolFactUser _ name _) = "f_" ++ name
+folFactTagName (FolFactUser _ name _) = name
 folFactTagName FolFactFresh = "Fr"
 folFactTagName FolFactOut  = "Out"
 folFactTagName FolFactIn = "In"
 folFactTagName FolFactKnown = "K"
 
-folFuncTuple :: FolFuncId -> (FolName, [FolSort], FolSort)
-folFuncTuple (End temp) = ("end", [tempSort temp], FolSortBool)
+folFuncTuple :: FolFuncId -> (FolIdent, [FolSort], FolSort)
+folFuncTuple (End temp) = (FolIdentBuiltin "end", [tempSort temp], FolSortBool)
 folFuncTuple (MsgSymbol s) = (msgFuncIdName s, [FolSortMsg | _ <- [1..msgFuncIdArity s]], FolSortMsg)
-folFuncTuple (FolFuncAct tag) = ("a_" ++ folFactTagName tag, [FolSortMsg | _ <- [1..folFactTagArity tag]], FolSortAct)
-folFuncTuple (FolFuncFact tag) = (folFactTagName tag, [FolSortMsg | _ <- [1..folFactTagArity tag]], srt (folFactTagMultiplicity tag))
+folFuncTuple (FolFuncAct tag) = (FolIdentUserAction $ folFactTagName tag, [FolSortMsg | _ <- [1..folFactTagArity tag]], FolSortAct)
+folFuncTuple (FolFuncFact tag) = (FolIdentUserFact $ folFactTagName tag, [FolSortMsg | _ <- [1..folFactTagArity tag]], srt (folFactTagMultiplicity tag))
   where srt Persistent = FolSortPer
         srt Linear = FolSortLin
-folFuncTuple (FolEq s) = ("=", [s, s], FolSortBool)
-folFuncTuple FolTempLess = ("tempLess", [FolSortTemp, FolSortTemp], FolSortBool)
-folFuncTuple FolNatSucc = ("s", [FolSortNat], FolSortNat)
-folFuncTuple FolNatZero = ("zero", [], FolSortNat)
-folFuncTuple FolNatAdd = ("add", [FolSortNat, FolSortNat], FolSortNat)
-folFuncTuple FolPredPre = ("Pre", [FolSortRule, FolSortPer], FolSortBool)
-folFuncTuple FolPredCon = ("Con", [FolSortRule, FolSortPer], FolSortBool)
-folFuncTuple FolPredAct = ("Act", [FolSortRule, FolSortAct], FolSortBool)
-folFuncTuple FolFuncPre = ("pre", [FolSortRule, FolSortLin], FolSortNat)
-folFuncTuple FolFuncCon = ("con", [FolSortRule, FolSortLin], FolSortNat)
+folFuncTuple (FolEq s) = (FolIdentEq, [s, s], FolSortBool)
+folFuncTuple FolTempLess = (FolIdentBuiltin "tempLess", [FolSortTemp, FolSortTemp], FolSortBool)
+folFuncTuple FolNatSucc = (FolIdentBuiltin "s", [FolSortNat], FolSortNat)
+folFuncTuple FolNatZero = (FolIdentBuiltin "zero", [], FolSortNat)
+folFuncTuple FolNatAdd = (FolIdentBuiltin "add", [FolSortNat, FolSortNat], FolSortNat)
+folFuncTuple FolPredPre = (FolIdentBuiltin "Pre", [FolSortRule, FolSortPer], FolSortBool)
+folFuncTuple FolPredCon = (FolIdentBuiltin "Con", [FolSortRule, FolSortPer], FolSortBool)
+folFuncTuple FolPredAct = (FolIdentBuiltin "Act", [FolSortRule, FolSortAct], FolSortBool)
+folFuncTuple FolFuncPre = (FolIdentBuiltin "pre", [FolSortRule, FolSortLin], FolSortNat)
+folFuncTuple FolFuncCon = (FolIdentBuiltin "con", [FolSortRule, FolSortLin], FolSortNat)
 folFuncTuple (FolFuncRule r) = (_frName r, snd <$> ruleVars r, FolSortRule)
-folFuncTuple FolFuncEquals = ("equals", [FolSortLin, FolSortLin], FolSortNat)
-folFuncTuple FolFuncVarFresh = ("fresh", [FolSortNat], FolSortMsg)
-folFuncTuple FolFuncVarPub = ("pub", [FolSortNat], FolSortMsg)
-folFuncTuple FolFuncVarNat = ("nat", [FolSortNat], FolSortMsg)
-folFuncTuple (FolFuncState temp) = ("state", [FolSortLin, tempSort temp], FolSortNat)
-folFuncTuple (FolPredState temp) = ("State", [FolSortPer, tempSort temp], FolSortBool)
-folFuncTuple (FolPredLab temp) = ("Lab", [FolSortAct, tempSort temp], FolSortBool)
-folFuncTuple FolFuncTempSucc = ("t+1", [FolSortTemp], FolSortTemp)
-folFuncTuple FolFuncTempZero = ("t0", [], FolSortTemp)
-folFuncTuple (FolFuncStringLiteral n srt) = ("l_" ++ getNameId n, [], srt)
+folFuncTuple FolFuncEquals = (FolIdentBuiltin "equals", [FolSortLin, FolSortLin], FolSortNat)
+folFuncTuple FolFuncVarFresh = (FolIdentBuiltin "fresh", [FolSortNat], FolSortMsg)
+folFuncTuple FolFuncVarPub = (FolIdentBuiltin "pub", [FolSortNat], FolSortMsg)
+folFuncTuple FolFuncVarNat = (FolIdentBuiltin "nat", [FolSortNat], FolSortMsg)
+folFuncTuple (FolFuncState temp) = (FolIdentBuiltin "state", [FolSortLin, tempSort temp], FolSortNat)
+folFuncTuple (FolPredState temp) = (FolIdentBuiltin "State", [FolSortPer, tempSort temp], FolSortBool)
+folFuncTuple (FolPredLab temp) = (FolIdentBuiltin "Lab", [FolSortAct, tempSort temp], FolSortBool)
+folFuncTuple FolFuncTempSucc = (FolIdentBuiltin "t+1", [FolSortTemp], FolSortTemp)
+folFuncTuple FolFuncTempZero = (FolIdentBuiltin "t0", [], FolSortTemp)
+folFuncTuple (FolFuncStringLiteral n srt) = (FolIdentUserLiteral $ getNameId n, [], srt)
 
-folFuncName :: FolFuncId -> String
+folFuncName :: FolFuncId -> FolIdent
 folFuncName f = let (n, _, _) = folFuncTuple f in n
 
 folFuncSig :: FolFuncId -> ([FolSort], FolSort)
@@ -797,8 +825,8 @@ toFolRules temp = mapMaybe toRule
                               ( actT temp () <$> acts)
                               (factT temp () <$> concs))
            where name' = case name of
-                    FreshRule -> "ruleFresh"
-                    StandRule r -> "r_" ++ r
+                    FreshRule -> FolIdentBuiltinRuleFresh 
+                    StandRule r -> FolIdentUserRule $ r
         toRule (RuleItem r) = error ("unexpected rule" ++ show r)
         toRule _ = Nothing
 
@@ -993,7 +1021,7 @@ instance PVar LVar where
         LSortFresh -> folApp FolFuncVarFresh [FolVar (name, FolSortNat)]
         LSortNat   -> folApp FolFuncVarNat   [FolVar (name, FolSortNat)]
         _          -> FolVar (name, toFolSort temp sort)
-      where name = if idx  == 0 then "v_" ++ n else "v_" ++ n ++ "_" ++ show idx
+      where name = if idx  == 0 then n else n ++ "." ++ show idx
 
 
 
