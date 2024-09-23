@@ -39,7 +39,6 @@ toSmtlib _ = Smtlib
 
 data FolSort = FolSortMsg
              | FolSortNat
-             | FolSortRat
              | FolSortTemp
              | FolSortBool
              | FolSortRule
@@ -133,8 +132,6 @@ data FolFuncId = FolEq FolSort
                | FolFuncTempSucc
                | FolFuncTempZero
                | FolRatLiteral Rational
-               | FolRatAdd
-               | FolRatLess
                | FolFuncStringLiteral NameId FolSort
   deriving (Show,Ord,Eq)
 
@@ -177,7 +174,6 @@ data FolSignature = FolSignature {
 sortName :: FolSort -> FolName
 sortName FolSortMsg = "msg"
 sortName FolSortNat = "nat"
-sortName FolSortRat = "rat"
 sortName FolSortTemp = "temp"
 sortName FolSortBool = "bool"
 sortName FolSortRule = "rule"
@@ -188,7 +184,6 @@ sortName FolSortAct = "act"
 sortDescription :: FolSort -> Doc ann
 sortDescription FolSortMsg = pretty "messages"
 sortDescription FolSortNat = pretty "natural numbers"
-sortDescription FolSortRat = pretty "rational numbers"
 sortDescription FolSortTemp = pretty "abstract time point datatype (debugging purpose of the translation only)"
 sortDescription FolSortBool = pretty "built-in bool sort"
 sortDescription FolSortRule = pretty "rule sort"
@@ -211,7 +206,6 @@ class ToSmt a where
 instance ToSmt FolSort where
   toSmt FolSortMsg  = pretty "msg"
   toSmt FolSortNat  = pretty "nat"
-  toSmt FolSortRat  = pretty "Real" -- TODO is this okay?
   toSmt FolSortTemp = pretty "temp"
   toSmt FolSortBool = pretty "Bool"
   toSmt FolSortRule = pretty "rule"
@@ -273,15 +267,12 @@ instance ToSmt FolRule where
 
 
 isBuiltinSmtSort :: FolSort -> Bool
-isBuiltinSmtSort FolSortRat = True
 isBuiltinSmtSort FolSortBool = True
 isBuiltinSmtSort _ = False
 
 isBuiltinSmtFun :: FolFuncId -> Bool
 isBuiltinSmtFun (FolEq _)         = True
 isBuiltinSmtFun (FolRatLiteral _) = True
-isBuiltinSmtFun FolRatAdd         = True
-isBuiltinSmtFun FolRatLess        = True
 isBuiltinSmtFun _                 = False
 
 isConstructor :: FolFuncId -> Bool
@@ -313,8 +304,6 @@ isConstructor FolFuncPre                 = False
 isConstructor FolFuncCon                 = False
 isConstructor FolFuncEquals              = False
 isConstructor (FolPredLab _)             = False
-isConstructor FolRatAdd                  = False
-isConstructor FolRatLess                 = False
 
 folFuncDom = snd . folFuncSig
 parH = parens . hsep
@@ -602,12 +591,6 @@ folAssumptions (FolProblem temp rules _ msgSyms eq) =
     addT :: FolTerm -> FolTerm -> FolTerm
     addT = fun2 FolNatAdd
 
-    addQT :: FolTerm -> FolTerm -> FolTerm
-    addQT = fun2 FolRatAdd
-
-    literalQT :: Rational -> FolTerm
-    literalQT r = folApp (FolRatLiteral r) []
-
     zeroT :: FolTerm
     zeroT =  folApp FolNatZero []
 
@@ -654,13 +637,11 @@ folAssumptions (FolProblem temp rules _ msgSyms eq) =
     tempSucc t = case temp of
                    TempAbstract -> folApp FolFuncTempSucc [t]
                    TempNat -> succT t
-                   -- TempRat -> addQT t (literalQT 1)
 
     startTime :: FolTerm
     startTime = case temp of
                    TempAbstract -> folApp FolFuncTempZero []
                    TempNat -> zeroT
-                   -- TempRat -> literalQT 0
 
 folGoal :: FolProblem -> (Doc ann, FolFormula, TraceQuantifier)
 folGoal (FolProblem _ _ (FolGoal name form tq) _ _) = (pretty name, form, tq)
@@ -773,9 +754,6 @@ folFuncTuple (FolPredState temp) = ("State", [FolSortPer, tempSort temp], FolSor
 folFuncTuple (FolPredLab temp) = ("Lab", [FolSortAct, tempSort temp], FolSortBool)
 folFuncTuple FolFuncTempSucc = ("t+1", [FolSortTemp], FolSortTemp)
 folFuncTuple FolFuncTempZero = ("t0", [], FolSortTemp)
-folFuncTuple FolRatAdd = ("+", [FolSortRat, FolSortRat], FolSortRat)
-folFuncTuple FolRatLess = ("<", [FolSortRat, FolSortRat], FolSortBool)
-folFuncTuple (FolRatLiteral r) = (show r, [], FolSortRat)
 folFuncTuple (FolFuncStringLiteral n srt) = ("l_" ++ getNameId n, [], srt)
 
 folFuncName :: FolFuncId -> String
