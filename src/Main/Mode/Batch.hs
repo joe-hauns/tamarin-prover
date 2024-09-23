@@ -22,6 +22,7 @@ import System.FilePath
 import System.Timing (timedIO)
 import Extension.Data.Label
 import Data.Bitraversable (Bitraversable(bitraverse))
+import System.Directory (createDirectoryIfMissing)
 
 import Text.PrettyPrint.Class qualified as Pretty
 import Text.Printf (printf)
@@ -100,31 +101,26 @@ batchMode = tamarinMode
 run :: TamarinMode -> Arguments -> IO ()
 run thisMode as
   | null inFiles = helpAndExit thisMode (Just "no input files given")
-  | argExists "toSmtlib" as = do
-    out <- case mapM mkOutPath inFiles of 
-      Just f -> pure f
-      Nothing -> die "Please specify a valid output file/directory"
-    putStrLn $ "blaaaaaaaaaaaaaa: " ++ (show out)
-    either handleError pure <=< runExceptT $ do
-      -- versionData <- liftIO $ ensureMaudeAndGetVersion as
+  | argExists "toSmtlib" as = either handleError pure <=< runExceptT $ do
+      let inFile = getArg "inFile" as
+      let oArg = getArg "outDir" as
+      case oArg of 
+        "" -> liftIO $ die "Please specify a non-empty output directory"
+        _ -> pure ()
 
-      -- let writeOutput = argExists "outFile" as || argExists "outDir" as
-      forM_ inFiles (\inFile -> do
-        srcThy <- liftIO $ readFile  inFile
-        thy    <- loadTheory thyLoadOptions srcThy inFile
+      liftIO $ putStrLn $ "input file: " ++ show inFile
 
-        case thy of 
-          Left t -> liftIO $ do
-            forM_ (toFolProblem TempNat t) $ \p -> do
-              putStrLn ""
-              putStrLn "=============================================="
-              putStrLn "=============================================="
-              putStrLn "=============================================="
-              putStrLn ""
-              outputSmt p
-              where prt s x = putStrLn $ s ++ ": " ++ show x
-          Right _diffThy -> error "translation of diff theory is not supported (yet)"
-        )
+      srcThy <- liftIO $ readFile  inFile
+      thy    <- loadTheory thyLoadOptions srcThy inFile
+
+      liftIO $ createDirectoryIfMissing True oArg
+      case thy of 
+        Left t -> liftIO $ do
+          forM_ (zip [0::Int ..] (toFolProblem TempNat t)) $ \(i,p) -> do
+            let fname = oArg </> show i ++ ".smt2"
+            putStrLn $ "writing: " ++ fname
+            liftIO $ writeFile fname (show $ toSmt p)
+        Right _diffThy -> error "translation of diff theory is not supported (yet)"
 
   | argExists "parseOnly" as = do
       res <- mapM (processThy "") inFiles

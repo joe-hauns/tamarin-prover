@@ -9,6 +9,7 @@ module Main.Mode.Batch.ToSmtlib (
   , outputNice
   , outputSmt
   , TempTranslation(..)
+  , ToSmt(..)
   ) where
 
 import Items.OpenTheoryItem
@@ -197,11 +198,10 @@ sortDescription FolSortAct = pretty "actions (facts used as labels for rewrites)
 
 -- data Namespaced = 
 
-data TempTranslation = TempRat | TempNat | TempAbstract
+data TempTranslation = TempNat | TempAbstract
   deriving (Show,Ord,Eq)
 
 tempSort :: TempTranslation -> FolSort
-tempSort TempRat = FolSortRat
 tempSort TempNat = FolSortNat
 tempSort TempAbstract = FolSortTemp
 
@@ -487,7 +487,6 @@ folSignature p = FolSignature (uniq $ forms >>= sorts) (uniq $ forms >>= funcs)
         sorts' (FolApp fid fs) = res:args ++  (sorts' =<< fs)
           where (args, res) = folFuncSig fid
 
-
         funcs (FolAtom t) = funcs' t
         funcs (FolBool _) = []
         funcs (FolNot f) = funcs f
@@ -655,13 +654,13 @@ folAssumptions (FolProblem temp rules _ msgSyms eq) =
     tempSucc t = case temp of
                    TempAbstract -> folApp FolFuncTempSucc [t]
                    TempNat -> succT t
-                   TempRat -> addQT t (literalQT 1)
+                   -- TempRat -> addQT t (literalQT 1)
 
     startTime :: FolTerm
     startTime = case temp of
                    TempAbstract -> folApp FolFuncTempZero []
                    TempNat -> zeroT
-                   TempRat -> literalQT 0
+                   -- TempRat -> literalQT 0
 
 folGoal :: FolProblem -> (Doc ann, FolFormula, TraceQuantifier)
 folGoal (FolProblem _ _ (FolGoal name form tq) _ _) = (pretty name, form, tq)
@@ -838,8 +837,11 @@ infixl 2 <~>
 infixl 2 ~>
 infixl 2 <~
 
+fun1 :: FolFuncId -> FolTerm -> FolTerm
 fun1 f a0       = folApp f [a0]
+fun2 :: FolFuncId -> FolTerm -> FolTerm -> FolTerm
 fun2 f a0 a1    = folApp f [a0, a1]
+fun3 :: FolFuncId -> FolTerm -> FolTerm -> FolTerm -> FolTerm
 fun3 f a0 a1 a2 = folApp f [a0, a1, a2]
 
 toFolProblem :: TempTranslation -> OpenTheory -> [FolProblem]
@@ -1042,7 +1044,6 @@ sortOf (FolVar (_, s)) = s
 toFolAtom :: (PVar v, Show v) => TempTranslation -> PVarCtx v -> ProtoAtom Unit2 (VTerm Name v) -> FolFormula
 toFolAtom temp qs (Action term fact)  = FolAtom $ folApp (FolPredLab temp) [actT temp qs fact,  toFolTerm temp qs term]
 toFolAtom temp qs (EqE s t) = toFolTerm temp qs s ~~ toFolTerm temp qs t
-toFolAtom TempRat qs (Less s t) = FolAtom $ folApp FolRatLess $ toFolTerm TempAbstract qs <$> [s,t]
 toFolAtom TempAbstract qs (Less s t) = FolAtom $ folApp FolTempLess $ toFolTerm TempAbstract qs <$> [s,t]
 toFolAtom temp@TempNat qs (Less s t) = exQ [d] (succT (addT (toFolTerm temp qs s) d)  ~~ toFolTerm temp qs t)
   where d = FolVar ("d_", FolSortNat)
