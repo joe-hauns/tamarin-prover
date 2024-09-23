@@ -10,7 +10,7 @@ module Main.Mode.Batch (
   ) where
 
 import Control.Applicative ((<|>))
-import Control.Monad (guard, (<=<), forM, forM_)
+import Control.Monad (guard, (<=<), forM_)
 import Control.Monad.Except (runExceptT)
 import Control.Monad.IO.Class (MonadIO(liftIO))
 import Data.Bifunctor (bimap)

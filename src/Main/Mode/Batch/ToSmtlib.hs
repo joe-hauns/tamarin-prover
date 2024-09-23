@@ -167,7 +167,6 @@ data FolFuncId = FolEq FolSort
                | FolPredLab TempTranslation
                | FolFuncTempSucc
                | FolFuncTempZero
-               | FolRatLiteral Rational
                | FolFuncStringLiteral NameId FolSort
   deriving (Show,Ord,Eq)
 
@@ -304,7 +303,6 @@ isBuiltinSmtSort _ = False
 
 isBuiltinSmtFun :: FolFuncId -> Bool
 isBuiltinSmtFun (FolEq _)         = True
-isBuiltinSmtFun (FolRatLiteral _) = True
 isBuiltinSmtFun _                 = False
 
 isConstructor :: FolFuncId -> Bool
@@ -326,7 +324,6 @@ isConstructor FolTempLess                = False
 isConstructor (End _)                    = False
 isConstructor (FolFuncState _)           = False
 isConstructor (FolPredState _)           = False
-isConstructor (FolRatLiteral _)          = False
 isConstructor (FolFuncStringLiteral _ _) = False
 isConstructor FolNatAdd                  = False
 isConstructor FolPredPre                 = False
@@ -339,7 +336,6 @@ isConstructor (FolPredLab _)             = False
 
 folFuncDom = snd . folFuncSig
 parH = parens . hsep
-parV = parens . vsep
 smtItem s as = parens $ hsep (pretty s : as)
 instance ToSmt FolSignature where
   toSmt (FolSignature sorts funcs) = vcat $ intersperse emptyDoc [
@@ -700,9 +696,6 @@ outputNice = putStr . show . toDoc
 (~>) :: FolFormula -> FolFormula  -> FolFormula
 (~>) = FolConn Imp
 
-(<~) :: FolFormula -> FolFormula  -> FolFormula
-(<~) = flip (~>)
-
 neg :: FolFormula -> FolFormula
 neg = FolNot
 
@@ -806,6 +799,10 @@ assertEmpty :: Show a => [a] -> String -> Bool
 assertEmpty [] _name = True
 assertEmpty xs name = error ("expected " ++ name ++ " to be empty. is: " ++ show xs)
 
+unsupportedNonEmpty :: Show a => [a] -> String -> Bool
+unsupportedNonEmpty [] _name = True
+unsupportedNonEmpty xs name = error ("unsupported file: " ++ name)
+
 
 toFolRules :: TempTranslation -> [TheoryItem OpenProtoRule p s] -> [FolRule]
 toFolRules temp = mapMaybe toRule
@@ -822,7 +819,7 @@ toFolRules temp = mapMaybe toRule
                        )
                    ruleAC -- ruleAC
                    ))
-         |    assertEmpty attr "attr"
+         |    unsupportedNonEmpty attr ("translating rules with attributes (e.g.: " ++ show name ++ ") is not supported")
            && assertEmpty ruleAC "ruleAC"
            && assertEmpty restriction "restriction"
               = Just (FolRule name'
@@ -846,7 +843,6 @@ infixl 4 /\
 infixl 3 \/
 infixl 2 <~>
 infixl 2 ~>
-infixl 2 <~
 
 fun1 :: FolFuncId -> FolTerm -> FolTerm
 fun1 f a0       = folApp f [a0]
