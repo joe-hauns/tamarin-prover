@@ -100,41 +100,28 @@ batchMode = tamarinMode
 run :: TamarinMode -> Arguments -> IO ()
 run thisMode as
   | null inFiles = helpAndExit thisMode (Just "no input files given")
-  | argExists "toSmtlib" as = either handleError pure <=< runExceptT $ do
+  | argExists "toSmtlib" as = do
+    out <- case mapM mkOutPath inFiles of 
+      Just f -> pure f
+      Nothing -> die "Please specify a valid output file/directory"
+    putStrLn $ "blaaaaaaaaaaaaaa: " ++ (show out)
+    either handleError pure <=< runExceptT $ do
       -- versionData <- liftIO $ ensureMaudeAndGetVersion as
 
+      -- let writeOutput = argExists "outFile" as || argExists "outDir" as
       forM_ inFiles (\inFile -> do
         srcThy <- liftIO $ readFile  inFile
         thy    <- loadTheory thyLoadOptions srcThy inFile
-        -- let sig = either (._thySignature) (._diffThySignature) thy
-        -- sig'   <- liftIO $ toSignatureWithMaude thyLoadOptions._oMaudePath sig
-        -- (report, thy') <- closeTheory versionData thyLoadOptions sig' thy
 
         case thy of 
-          Left t' -> liftIO $ do
-            let t = t'
-            -- let t = openTranslatedTheory $ removeTranslationItems t'
-            prt "Heuristic" $ _thyHeuristic t
-            prt "Tactic" $ _thyTactic t
-            prt "Cache" $ _thyCache t
-            prt "Options" $ _thyOptions t
-            prt "IsSapic" $ _thyIsSapic t
-            putStrLn ""
-            putStrLn "=================================================="
-            putStrLn ""
-            prt "Signature" $ _sigMaudeInfo $ _thySignature t
-            prt "Signature" $ stFunSyms $ _sigMaudeInfo $ _thySignature t
-            putStrLn ""
-            putStrLn "Items:" 
-            let items' =  [ i  | i <- _thyItems t
-                               , case i of 
-                                   TranslationItem (FunctionTypingInfo _) -> False
-                                   _ -> True
-                               ]
-            forM_ items' $ \item -> do
-              putStrLn $ "  " ++ (show item)
-            putStrLn ""
-            outputSmt $ toFolProblem TempNat t
+          Left t -> liftIO $ do
+            forM_ (toFolProblem TempNat t) $ \p -> do
+              putStrLn ""
+              putStrLn "=============================================="
+              putStrLn "=============================================="
+              putStrLn "=============================================="
+              putStrLn ""
+              outputSmt p
               where prt s x = putStrLn $ s ++ ": " ++ show x
           Right _diffThy -> error "translation of diff theory is not supported (yet)"
         )
