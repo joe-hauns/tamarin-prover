@@ -124,6 +124,7 @@ executable tamarin-prover
     build-depends:
         HUnit
       , base
+      , base64-bytestring
       , binary
       , binary-orphans
       , binary-instances

@@ -28,6 +28,7 @@ import Theory
 import Data.Set hiding (filter)
 import Term.SubtermRule
 import Control.Monad
+import qualified Data.ByteString.Base64 as B64
 
 data FolIdent = FolIdentUserMsg String
               | FolIdentUserFact String
@@ -37,7 +38,7 @@ data FolIdent = FolIdentUserMsg String
               | FolIdentUserVar String
               | FolIdentAC String
               | FolIdentEmap
-              | FolIdentBuiltin String 
+              | FolIdentTranslationBuiltin String 
               | FolIdentBuiltinRuleFresh
               | FolIdentBuiltinRuleMd Int 
               | FolIdentBuiltinRuleMdPubMessage FolIdent
@@ -47,22 +48,29 @@ data FolIdent = FolIdentUserMsg String
     deriving (Show,Eq,Ord)
 -- type FolIdent = String
 
+
+--
+userChar :: String
+userChar = "$"
+--
+builtinChar :: String
+builtinChar = "%"
+--
 identToStr :: FolIdent -> String
--- user defined symbols start with $
-identToStr (FolIdentUserMsg s) = "$" ++ s
-identToStr (FolIdentUserFact s) = "$" ++ s ++ "$f"
-identToStr (FolIdentUserAction s) = "$" ++ s ++ "$a"
-identToStr (FolIdentUserLiteral s) = "$" ++ s ++ "$l"
-identToStr (FolIdentUserRule s) = "$" ++ s ++ "$r"
-identToStr (FolIdentUserVar s) = "$" ++ s
--- translation builtins start with @
-identToStr (FolIdentBuiltin s) = "@" ++ s
-identToStr (FolIdentSort s)  = "@" ++ s
-identToStr (FolIdentAC s) = "@" ++ s ++ "@ac"
-identToStr FolIdentEmap = "@emap"
-identToStr FolIdentBuiltinRuleFresh = "@fresh@r"
-identToStr (FolIdentBuiltinRuleMd i) = "@md@" ++ show i
-identToStr (FolIdentBuiltinRuleMdPubMessage id) = "@md" ++ identToStr id
+identToStr (FolIdentUserMsg s)     = userChar ++ s
+identToStr (FolIdentUserFact s)    = userChar ++ s ++ userChar ++ "f"
+identToStr (FolIdentUserAction s)  = userChar ++ s ++ userChar ++ "a"
+identToStr (FolIdentUserLiteral s) = userChar ++ (BS.unpack . B64.encode . BS.pack) s ++ userChar ++ "l"
+identToStr (FolIdentUserRule s)    = userChar ++ s ++ userChar ++ "r"
+identToStr (FolIdentUserVar s)     = userChar ++ s
+--
+identToStr (FolIdentTranslationBuiltin s) = builtinChar ++ s
+identToStr (FolIdentSort s)  = builtinChar ++ s
+identToStr (FolIdentAC s) = builtinChar ++ s ++ builtinChar  ++ "ac"
+identToStr FolIdentEmap = builtinChar ++ "emap"
+identToStr FolIdentBuiltinRuleFresh = builtinChar ++ "fresh" ++ builtinChar ++ "r"
+identToStr (FolIdentBuiltinRuleMd i) = builtinChar ++ "md" ++ builtinChar ++ show i
+identToStr (FolIdentBuiltinRuleMdPubMessage id) = builtinChar ++ "md" ++ identToStr id
 -- smtlib builtins
 identToStr FolIdentEq = "="
 identToStr FolIdentBool = "Bool"
@@ -74,6 +82,7 @@ toSmtlib :: FolSignature -> Smtlib
 toSmtlib _ = Smtlib
 
 data FolSort = FolSortMsg
+             | FolSortMsgClass
              | FolSortNat
              | FolSortTemp
              | FolSortBool
@@ -86,7 +95,8 @@ data FolSort = FolSortMsg
 data FolFactTag = FolFactUser Multiplicity String Int
                 | FolFactOut
                 | FolFactIn
-                | FolFactKnown
+                | FolFactKnown -- action
+                | FolFactKU -- fact
                 | FolFactFresh
   deriving (Show,Ord,Eq)
 
@@ -95,6 +105,7 @@ folFactTagMultiplicity (FolFactUser m _ _) = m
 folFactTagMultiplicity FolFactOut = Linear
 folFactTagMultiplicity FolFactIn = Linear
 folFactTagMultiplicity FolFactKnown = Persistent
+folFactTagMultiplicity FolFactKU    = Persistent
 folFactTagMultiplicity FolFactFresh = Linear
 
 folFactTagArity :: FolFactTag -> Int
@@ -102,6 +113,7 @@ folFactTagArity (FolFactUser _ _ a) = a
 folFactTagArity FolFactOut = 1
 folFactTagArity FolFactIn = 1
 folFactTagArity FolFactKnown = 1
+folFactTagArity FolFactKU    = 1
 folFactTagArity FolFactFresh = 1
 
 unreachableErrMsg1 :: FactTag -> a
@@ -112,20 +124,12 @@ toFolFactTag (ProtoFact m s i) = FolFactUser m s i
 toFolFactTag FreshFact  = FolFactFresh
 toFolFactTag OutFact    = FolFactOut
 toFolFactTag InFact     = FolFactIn
-toFolFactTag KUFact     = FolFactKnown
-toFolFactTag f@KDFact   = unreachableErrMsg1 f
+toFolFactTag KUFact     = FolFactKU
+toFolFactTag f@KDFact   = unsupportedFile $ "unexpected fact in rule or formula: " ++ show f
 toFolFactTag f@DedFact  = unreachableErrMsg1 f
 toFolFactTag f@TermFact = unreachableErrMsg1 f
 
-
 type MsgFuncId = FunSym
-
--- folFuncTuple (MsgSymbol (NoEq (name, (arity, _priv, _constr)))) = 
---                    (unpack name, [FolSortMsg | _ <- [1..arity]], FolSortMsg)
--- folFuncTuple (MsgSymbol (AC ac)) = 
---                    (show ac, [FolSortMsg, FolSortMsg], FolSortMsg)
--- folFuncTuple (MsgSymbol (C EMap)) = error "EMap message not supported (yet)"
--- folFuncTuple (MsgSymbol List) = error "List message not supported (yet)"
 
 unsupportedFile :: String -> a
 unsupportedFile msg = error ("unsupported file: " ++ msg)
@@ -150,7 +154,8 @@ msgFuncIdArity (C EMap) = 2
 data FolFuncId = FolEq FolSort
                | FolTempLess
                | End TempTranslation
-               | MsgSymbol MsgFuncId
+               | FolFuncMsg MsgFuncId
+               | FolFuncMsgToClass
                | FolFuncFact FolFactTag
                | FolFuncAct FolFactTag
                | FolNatAdd
@@ -180,6 +185,7 @@ data FolTerm = FolApp FolFuncId [FolTerm]
 
 
 folApp :: FolFuncId -> [FolTerm] -> FolTerm
+folApp (FolEq FolSortMsg) args = error $ "unreachable, trying to create an equality between msg terms: " ++ intercalate ", " (fmap (show . toDoc) args) ++ ". should be done by creating an equality between there eq classes (use: " ++ show FolFuncMsgToClass ++ ")"
 folApp f as | argSorts == expArgSorts = FolApp f as
             | otherwise = error $ "trying to apply " ++ show (toDoc f) ++ ": " ++ show expArgSorts
              ++ " to args " ++ intercalate "," (show . toDoc <$> as) ++ " (sorts: " ++ show argSorts ++ ")"
@@ -216,6 +222,7 @@ data FolSignature = FolSignature {
 
 sortName :: FolSort -> FolIdent
 sortName FolSortMsg = FolIdentSort "msg"
+sortName FolSortMsgClass = FolIdentSort "msgClass"
 sortName FolSortNat = FolIdentSort "nat"
 sortName FolSortTemp = FolIdentSort "temp"
 sortName FolSortBool = FolIdentBool
@@ -225,6 +232,7 @@ sortName FolSortPer = FolIdentSort "per"
 sortName FolSortAct = FolIdentSort "act"
 
 sortDescription :: FolSort -> Doc ann
+sortDescription FolSortMsgClass = pretty "equivalence classes of messages modulo background theory"
 sortDescription FolSortMsg = pretty "messages"
 sortDescription FolSortNat = pretty "natural numbers"
 sortDescription FolSortTemp = pretty "abstract time point datatype (debugging purpose of the translation only)"
@@ -252,6 +260,7 @@ instance ToSmt FolFuncId where
 
 instance ToSmt FolTerm where
   toSmt (FolVar (v, _)) = pretty $ identToStr $ FolIdentUserVar v 
+  toSmt (FolApp f []) = toSmt f
   toSmt (FolApp f ts) = parens $ toSmt f <+> align (hsep $ fmap toSmt ts)
 
 instance ToSmt Quantifier where
@@ -306,7 +315,7 @@ isConstructor :: FolFuncId -> Bool
 --
 isConstructor FolFuncTempSucc = True
 isConstructor FolFuncTempZero = True
-isConstructor (MsgSymbol _)   = True
+isConstructor (FolFuncMsg _)   = True
 isConstructor (FolFuncFact _) = True
 isConstructor (FolFuncAct _)  = True
 isConstructor FolNatSucc      = True
@@ -316,6 +325,7 @@ isConstructor FolFuncVarFresh = True
 isConstructor FolFuncVarPub   = True
 isConstructor FolFuncVarNat   = True
 --
+isConstructor FolFuncMsgToClass                 = False
 isConstructor (FolEq _)                  = False
 isConstructor FolTempLess                = False
 isConstructor (End _)                    = False
@@ -335,29 +345,35 @@ smtItem s as = parens $ hsep (pretty s : as)
 instance ToSmt FolSignature where
   toSmt (FolSignature sorts funcs) = vcat $ intersperse emptyDoc [
       vcat [ smtItem "declare-sort" [ toSmt s, pretty "0" ] 
-             <+> pretty ";-" <+> sortDescription s  | s <- sorts, not (isBuiltinSmtSort s) ]
+             <+> pretty ";-" <+> sortDescription s  | s <- sorts
+                                                    , not $ isBuiltinSmtSort s 
+                                                    , not $ isInductive s]
+   , vcat [ parens $ pretty "declare-datatypes" <+> align (vsep 
+                [ parens $ align $ sep [ parH [toSmt s, pretty "0"] | s <- iSorts ]
+                , parens $ align $ vsep $ intersperse emptyDoc [ sortConstructors s i | (s, i) <- zip iSorts [0..] ]
+                ]) ]
     , vcat [ smtItem "declare-const" [ toSmt f, toSmt a ]
                    | f <- funcs
                    , let (as, a) = folFuncSig f
                    , as == []
-                   , not (isBuiltinSmtFun f)]
+                   , not (isBuiltinSmtFun f)
+                   , not (isConstructor f) 
+                   ]
     , vcat [ smtItem "declare-fun" [ toSmt f, parens $ hsep $ fmap toSmt as, toSmt a ]
                    | f <- funcs
                    , let (as, a) = folFuncSig f
                    , as /= []
-                   , not (isBuiltinSmtFun f)]
-    , vcat [ parens $ pretty "declare-datatypes" <+> align (vsep 
-                [ parens $ align $ sep [ parH [toSmt s, pretty "0"] | s <- iSorts ]
-                , parens $ align $ vsep $ intersperse emptyDoc [ sortConstructors s i | (s, i) <- zip iSorts [0..] ]
-                ]) ]
-    ]
+                   , not (isBuiltinSmtFun f)
+                   , not (isConstructor f) 
+                   ]
+     ]
      where isInductive s = [] /= [ f | f <- funcs
                                      , isConstructor f
                                      , folFuncDom f == s
                                      ]
            parH = parens . hsep
            iSorts = filter isInductive sorts
-           sortConstructors s i = align $ vsep $
+           sortConstructors s i = parens $ align $ vsep $
                 [ pretty ";-" <+>  toSmt s <> pretty ":" <+> sortDescription s ] 
              ++ [ ctorEntry f i j | (f, j) <- zip ctors [0..]]
                where ctors = filter isConstructor $ filter (\f -> folFuncDom f == s) funcs
@@ -382,7 +398,8 @@ instance ToSmt FolSignature where
 
 instance ToSmt FolProblem where
   toSmt p = vcat $ intersperse emptyDoc
-     [ toSmt (folSignature p)
+     [ smtItem "set-logic" [ pretty "UFDT" ]
+     , toSmt (folSignature p)
      , vcat $ intersperse emptyDoc (assm <$> folAssumptions p)
      , vsep [ titleComment "goal" gName
             , smtItem "assert" [ goalToF tq goal]
@@ -530,23 +547,23 @@ folAssumptions (FolProblem temp rules rs _ msgSyms eq) =
         ]
         ++ [ FolRule (FolIdentBuiltinRuleMdPubMessage (folFuncName fun))
                      [ factK x | x <- xs ] [] [ factK (folApp fun xs) ]
-            | fun@(MsgSymbol s) <- fmap MsgSymbol msgSyms
+            | fun@(FolFuncMsg s) <- fmap FolFuncMsg msgSyms
             , msgFuncIdPrivacy s == Public
             , let arity = folFuncArity fun
             , let xs = [ FolVar ("x" ++ show i, FolSortMsg) | i <- [1 .. arity] ] ]
       where x  = FolVar ("x", FolSortMsg)
             fr = FolVar ("fr", FolSortNat)
 
-    factIn    x = folApp (FolFuncFact FolFactIn   ) [x]
-    factOut   x = folApp (FolFuncFact FolFactOut  ) [x]
-    factK     x = folApp (FolFuncFact FolFactKnown) [x]
-    factFresh x = folApp (FolFuncFact FolFactFresh) [x]
-    actK      x = folApp (FolFuncAct  FolFactKnown) [x]
+    factIn    x = folApp (FolFuncFact FolFactIn   ) [msgToClass x]
+    factOut   x = folApp (FolFuncFact FolFactOut  ) [msgToClass x]
+    factK     x = folApp (FolFuncFact FolFactKU) [msgToClass x]
+    factFresh x = folApp (FolFuncFact FolFactFresh) [msgToClass x]
+    actK      x = folApp (FolFuncAct  FolFactKnown) [msgToClass x]
     freshVarT x = folApp FolFuncVarFresh [x]
     pubVarT x   = folApp FolFuncVarPub [x]
 
     addDef :: FolFormula
-    addDef = FolConnMultiline And [ allQ [x   ] ( addT x zeroT      ~~ x)
+    addDef = FolConnMultiline And [ allQ [x   ] ( addT x zeroT     ~~ x)
                                   , allQ [x, y] ( addT x (succT y) ~~ succT (addT x y))   ]
       where x = FolVar ("x", FolSortNat)
             y = FolVar ("y", FolSortNat)
@@ -743,39 +760,42 @@ data FolRule = FolRule {
     }
     deriving (Show,Eq,Ord)
 
+folFactTagName :: FolFactTag -> String
 folFactTagName (FolFactUser _ name _) = name
 folFactTagName FolFactFresh = "Fr"
-folFactTagName FolFactOut  = "Out"
-folFactTagName FolFactIn = "In"
+folFactTagName FolFactOut   = "Out"
+folFactTagName FolFactIn    = "In"
 folFactTagName FolFactKnown = "K"
+folFactTagName FolFactKU    = "KU"
 
 folFuncTuple :: FolFuncId -> (FolIdent, [FolSort], FolSort)
-folFuncTuple (End temp) = (FolIdentBuiltin "end", [tempSort temp], FolSortBool)
-folFuncTuple (MsgSymbol s) = (msgFuncIdName s, [FolSortMsg | _ <- [1..msgFuncIdArity s]], FolSortMsg)
-folFuncTuple (FolFuncAct tag) = (FolIdentUserAction $ folFactTagName tag, [FolSortMsg | _ <- [1..folFactTagArity tag]], FolSortAct)
-folFuncTuple (FolFuncFact tag) = (FolIdentUserFact $ folFactTagName tag, [FolSortMsg | _ <- [1..folFactTagArity tag]], srt (folFactTagMultiplicity tag))
+folFuncTuple (End temp) = (FolIdentTranslationBuiltin "end", [tempSort temp], FolSortBool)
+folFuncTuple (FolFuncMsg s) = (msgFuncIdName s, [FolSortMsg | _ <- [1..msgFuncIdArity s]], FolSortMsg)
+folFuncTuple FolFuncMsgToClass = (FolIdentTranslationBuiltin "class", [FolSortMsg], FolSortMsgClass)
+folFuncTuple (FolFuncAct tag) = (FolIdentUserAction $ folFactTagName tag, [FolSortMsgClass | _ <- [1..folFactTagArity tag]], FolSortAct)
+folFuncTuple (FolFuncFact tag) = (FolIdentUserFact $ folFactTagName tag, [FolSortMsgClass | _ <- [1..folFactTagArity tag]], srt (folFactTagMultiplicity tag))
   where srt Persistent = FolSortPer
         srt Linear = FolSortLin
 folFuncTuple (FolEq s) = (FolIdentEq, [s, s], FolSortBool)
-folFuncTuple FolTempLess = (FolIdentBuiltin "tempLess", [FolSortTemp, FolSortTemp], FolSortBool)
-folFuncTuple FolNatSucc = (FolIdentBuiltin "s", [FolSortNat], FolSortNat)
-folFuncTuple FolNatZero = (FolIdentBuiltin "zero", [], FolSortNat)
-folFuncTuple FolNatAdd = (FolIdentBuiltin "add", [FolSortNat, FolSortNat], FolSortNat)
-folFuncTuple FolPredPre = (FolIdentBuiltin "Pre", [FolSortRule, FolSortPer], FolSortBool)
-folFuncTuple FolPredCon = (FolIdentBuiltin "Con", [FolSortRule, FolSortPer], FolSortBool)
-folFuncTuple FolPredAct = (FolIdentBuiltin "Act", [FolSortRule, FolSortAct], FolSortBool)
-folFuncTuple FolFuncPre = (FolIdentBuiltin "pre", [FolSortRule, FolSortLin], FolSortNat)
-folFuncTuple FolFuncCon = (FolIdentBuiltin "con", [FolSortRule, FolSortLin], FolSortNat)
+folFuncTuple FolTempLess = (FolIdentTranslationBuiltin "tempLess", [FolSortTemp, FolSortTemp], FolSortBool)
+folFuncTuple FolNatSucc = (FolIdentTranslationBuiltin "s", [FolSortNat], FolSortNat)
+folFuncTuple FolNatZero = (FolIdentTranslationBuiltin "zero", [], FolSortNat)
+folFuncTuple FolNatAdd = (FolIdentTranslationBuiltin "add", [FolSortNat, FolSortNat], FolSortNat)
+folFuncTuple FolPredPre = (FolIdentTranslationBuiltin "Pre", [FolSortRule, FolSortPer], FolSortBool)
+folFuncTuple FolPredCon = (FolIdentTranslationBuiltin "Con", [FolSortRule, FolSortPer], FolSortBool)
+folFuncTuple FolPredAct = (FolIdentTranslationBuiltin "Act", [FolSortRule, FolSortAct], FolSortBool)
+folFuncTuple FolFuncPre = (FolIdentTranslationBuiltin "pre", [FolSortRule, FolSortLin], FolSortNat)
+folFuncTuple FolFuncCon = (FolIdentTranslationBuiltin "con", [FolSortRule, FolSortLin], FolSortNat)
 folFuncTuple (FolFuncRule r) = (_frName r, snd <$> ruleVars r, FolSortRule)
-folFuncTuple FolFuncEquals = (FolIdentBuiltin "equals", [FolSortLin, FolSortLin], FolSortNat)
-folFuncTuple FolFuncVarFresh = (FolIdentBuiltin "fresh", [FolSortNat], FolSortMsg)
-folFuncTuple FolFuncVarPub = (FolIdentBuiltin "pub", [FolSortNat], FolSortMsg)
-folFuncTuple FolFuncVarNat = (FolIdentBuiltin "nat", [FolSortNat], FolSortMsg)
-folFuncTuple (FolFuncState temp) = (FolIdentBuiltin "state", [FolSortLin, tempSort temp], FolSortNat)
-folFuncTuple (FolPredState temp) = (FolIdentBuiltin "State", [FolSortPer, tempSort temp], FolSortBool)
-folFuncTuple (FolPredLab temp) = (FolIdentBuiltin "Lab", [FolSortAct, tempSort temp], FolSortBool)
-folFuncTuple FolFuncTempSucc = (FolIdentBuiltin "t+1", [FolSortTemp], FolSortTemp)
-folFuncTuple FolFuncTempZero = (FolIdentBuiltin "t0", [], FolSortTemp)
+folFuncTuple FolFuncEquals = (FolIdentTranslationBuiltin "equals", [FolSortLin, FolSortLin], FolSortNat)
+folFuncTuple FolFuncVarFresh = (FolIdentTranslationBuiltin "fresh", [FolSortNat], FolSortMsg)
+folFuncTuple FolFuncVarPub = (FolIdentTranslationBuiltin "pub", [FolSortNat], FolSortMsg)
+folFuncTuple FolFuncVarNat = (FolIdentTranslationBuiltin "nat", [FolSortNat], FolSortMsg)
+folFuncTuple (FolFuncState temp) = (FolIdentTranslationBuiltin "state", [FolSortLin, tempSort temp], FolSortNat)
+folFuncTuple (FolPredState temp) = (FolIdentTranslationBuiltin "State", [FolSortPer, tempSort temp], FolSortBool)
+folFuncTuple (FolPredLab temp) = (FolIdentTranslationBuiltin "Lab", [FolSortAct, tempSort temp], FolSortBool)
+folFuncTuple FolFuncTempSucc = (FolIdentTranslationBuiltin "t+1", [FolSortTemp], FolSortTemp)
+folFuncTuple FolFuncTempZero = (FolIdentTranslationBuiltin "t0", [], FolSortTemp)
 folFuncTuple (FolFuncStringLiteral n srt) = (FolIdentUserLiteral $ getNameId n, [], srt)
 
 folFuncName :: FolFuncId -> FolIdent
@@ -789,10 +809,6 @@ folFuncDom = snd . folFuncSig
 
 folFuncArity :: FolFuncId -> Int
 folFuncArity = length . fst . folFuncSig
-
--- assertEq :: (Show a, Eq a) => a -> a -> String -> Bool
--- assertEq l r name | l == r    = True
---                   | otherwise = error ("expected " ++ name ++ " == " ++ show l ++ ". is: " ++ show r)
 
 assertEmpty :: Show a => [a] -> String -> Bool
 assertEmpty [] _name = True
@@ -841,6 +857,10 @@ infixl 4 /\
 infixl 3 \/
 infixl 2 <~>
 infixl 2 ~>
+infix 5 ~~~
+
+(~~~) :: FolTerm -> FolTerm -> FolFormula
+(~~~) l r = msgToClass l ~~  msgToClass r
 
 fun1 :: FolFuncId -> FolTerm -> FolTerm
 fun1 f a0       = folApp f [a0]
@@ -883,79 +903,79 @@ toFolProblem temp th
 
            sk = FolVar ("sk", FolSortMsg)
            m = FolVar ("m", FolSortMsg)
-           pk l = folApp (MsgSymbol (NoEq pkSym)) [l]
-           true = folApp (MsgSymbol (NoEq trueSym)) []
+           pk l = folApp (FolFuncMsg (NoEq pkSym)) [l]
+           true = folApp (FolFuncMsg (NoEq trueSym)) []
 
-           asym = [ adec (aenc m (pk sk)) sk ~~ m ]
+           asym = [ adec (aenc m (pk sk)) sk ~~~ m ]
              where
-               adec = fun2 (MsgSymbol (NoEq adecSym))
-               aenc = fun2 (MsgSymbol (NoEq aencSym))
+               adec = fun2 (FolFuncMsg (NoEq adecSym))
+               aenc = fun2 (FolFuncMsg (NoEq aencSym))
 
-           signing =  [ verify (sign m sk) m (pk sk) ~~ true ]
+           signing =  [ verify (sign m sk) m (pk sk) ~~~ true ]
              where
-               sign = fun2 (MsgSymbol (NoEq signSym))
-               verify = fun3 (MsgSymbol (NoEq verifySym))
+               sign = fun2 (FolFuncMsg (NoEq signSym))
+               verify = fun3 (FolFuncMsg (NoEq verifySym))
 
            revSigning =  [
-               revealVerify (revealSign m sk) m (pk sk) ~~ true
-             , getMessage (revealSign m sk) ~~ m
+               revealVerify (revealSign m sk) m (pk sk) ~~~ true
+             , getMessage (revealSign m sk) ~~~ m
              ]
              where
-               revealSign = fun2 (MsgSymbol (NoEq revealSignSym))
-               revealVerify a0 a1 a2 = folApp (MsgSymbol (NoEq revealVerifySym)) [a0, a1, a2]
-               getMessage l = folApp (MsgSymbol (NoEq extractMessageSym)) [l]
+               revealSign = fun2 (FolFuncMsg (NoEq revealSignSym))
+               revealVerify a0 a1 a2 = folApp (FolFuncMsg (NoEq revealVerifySym)) [a0, a1, a2]
+               getMessage l = folApp (FolFuncMsg (NoEq extractMessageSym)) [l]
 
 
-           sym = [ sdec (senc m k) k ~~ m ]
+           sym = [ sdec (senc m k) k ~~~ m ]
              where k = FolVar ("k", FolSortMsg)
-                   sdec = fun2 (MsgSymbol (NoEq sdecSym))
-                   senc = fun2 (MsgSymbol (NoEq sencSym))
+                   sdec = fun2 (FolFuncMsg (NoEq sdecSym))
+                   senc = fun2 (FolFuncMsg (NoEq sencSym))
 
            dh = ac (*) ++ [
-               (x ^ y) ^ z  ~~ x ^ (y * z)
-             ,  x ^ one     ~~ x
-             ,  x * one     ~~ x
-             ,  x * inv x   ~~ one
+               (x ^ y) ^ z  ~~~ x ^ (y * z)
+             ,  x ^ one     ~~~ x
+             ,  x * one     ~~~ x
+             ,  x * inv x   ~~~ one
              ]
-           (*) = fun2 (MsgSymbol (AC Mult))
-           (^) = fun2 (MsgSymbol (NoEq expSym))
-           inv t = folApp (MsgSymbol (NoEq invSym)) [t]
-           one = folApp (MsgSymbol (NoEq oneSym)) []
+           (*) = fun2 (FolFuncMsg (AC Mult))
+           (^) = fun2 (FolFuncMsg (NoEq expSym))
+           inv t = folApp (FolFuncMsg (NoEq invSym)) [t]
+           one = folApp (FolFuncMsg (NoEq oneSym)) []
 
            blp = [
-               pmult x (pmult y p) ~~ pmult (x*y) p
-             , pmult one p           ~~ p
-             , em p q              ~~ em q p
-             , em (pmult x p) q    ~~ pmult x (em q p)
+               pmult x (pmult y p) ~~~ pmult (x*y) p
+             , pmult one p         ~~~ p
+             , em p q              ~~~ em q p
+             , em (pmult x p) q    ~~~ pmult x (em q p)
              ]
              where
                p = FolVar ("p", FolSortMsg)
                q = FolVar ("q", FolSortMsg)
-               pmult = fun2 (MsgSymbol (NoEq pmultSym))
-               em = fun2 (MsgSymbol (C EMap))
+               pmult = fun2 (FolFuncMsg (NoEq pmultSym))
+               em = fun2 (FolFuncMsg (C EMap))
 
            ac (<>) = [
-                 x <> y        ~~ y <> x
-               , x <> (y <> z) ~~ (x <> y) <> z
+                 x <> y        ~~~ y <> x
+               , x <> (y <> z) ~~~ (x <> y) <> z
              ]
            xor = ac (<+>) ++ [
-               x <+> zero      ~~ x
-             , x <+> x         ~~ zero
+               x <+> zero      ~~~ x
+             , x <+> x         ~~~ zero
              ]
            infix 6 <+>
-           (<+>) = fun2 (MsgSymbol (AC Xor))
-           zero = folApp (MsgSymbol (NoEq zeroSym)) []
+           (<+>) = fun2 (FolFuncMsg (AC Xor))
+           zero = folApp (FolFuncMsg (NoEq zeroSym)) []
 
            multiset = ac union
-           union = fun2 (MsgSymbol (AC Union))
+           union = fun2 (FolFuncMsg (AC Union))
 
            natNum = ac (%+) ++ [
-               allQ [n] $ exQ [m,o] $ nat n ~~ nat m %+ nat o
-             , allQ [m,o] $ exQ [n] $ nat n ~~ nat m %+ nat o
+               allQ [n] $ exQ [m,o] $ nat n ~~~ nat m %+ nat o
+             , allQ [m,o] $ exQ [n] $ nat n ~~~ nat m %+ nat o
              ]
              where
                nat t = folApp FolFuncVarNat [t]
-               (%+) = fun2 (MsgSymbol (AC NatPlus))
+               (%+) = fun2 (FolFuncMsg (AC NatPlus))
                n = FolVar ("n", FolSortNat)
                m = FolVar ("m", FolSortNat)
                o = FolVar ("o", FolSortNat)
@@ -973,7 +993,7 @@ freeVars (FolBool _) = Data.Set.empty
 freeVars (FolQua _ v f) =  freeVars f \\ singleton v
 
 stRuleToFormula :: TempTranslation -> CtxtStRule -> FolFormula
-stRuleToFormula temp (CtxtStRule lhs (StRhs _pos rhs)) = universalClosure $ toFolTerm temp () lhs ~~ toFolTerm temp () rhs
+stRuleToFormula temp (CtxtStRule lhs (StRhs _pos rhs)) = universalClosure $ toFolTerm temp () lhs ~~~ toFolTerm temp () rhs
 
 data FolGoal = FolGoal String FolFormula TraceQuantifier
   deriving (Show)
@@ -1041,7 +1061,7 @@ instance PVar LVar where
 
 
 factOrActT :: PVar v => (FolFactTag -> FolFuncId) -> TempTranslation -> PVarCtx v -> Fact (VTerm Name v) -> FolTerm
-factOrActT toFuncId temp qs (Fact tag _annot terms) = folApp (toFuncId (toFolFactTag tag)) (toFolTerm temp qs <$> terms)
+factOrActT toFuncId temp qs (Fact tag _annot terms) = folApp (toFuncId (toFolFactTag tag)) (msgToClass . toFolTerm temp qs <$> terms)
 
 factT :: PVar v => TempTranslation -> PVarCtx v -> Fact (VTerm Name v) -> FolTerm
 factT = factOrActT FolFuncFact
@@ -1059,9 +1079,16 @@ sortOf (FolVar (_, s)) = s
 (~/~) :: FolTerm -> FolTerm -> FolFormula
 (~/~) l r = neg (l ~~ r)
 
+msgToClass :: FolTerm -> FolTerm
+msgToClass = fun1 FolFuncMsgToClass
+
 toFolAtom :: (PVar v, Show v) => TempTranslation -> PVarCtx v -> ProtoAtom Unit2 (VTerm Name v) -> FolFormula
-toFolAtom temp qs (Action term fact)  = FolAtom $ folApp (FolPredLab temp) [actT temp qs fact,  toFolTerm temp qs term]
-toFolAtom temp qs (EqE s t) = toFolTerm temp qs s ~~ toFolTerm temp qs t
+toFolAtom temp qs (Action time act)  = FolAtom $ folApp (FolPredLab temp) [actT temp qs act,  toFolTerm temp qs time]
+toFolAtom temp qs (EqE s t) = case sortOf s' of 
+                               FolSortMsg -> s' ~~~ t'
+                               _          -> s' ~~ t'
+   where s' = toFolTerm temp qs s
+         t' = toFolTerm temp qs t
 toFolAtom TempAbstract qs (Less s t) = FolAtom $ folApp FolTempLess $ toFolTerm TempAbstract qs <$> [s,t]
 toFolAtom temp@TempNat qs (Less s t) = exQ [d] (succT (addT (toFolTerm temp qs s) d)  ~~ toFolTerm temp qs t)
   where d = FolVar ("d_", FolSortNat)
@@ -1070,8 +1097,6 @@ toFolAtom temp@TempNat qs (Less s t) = exQ [d] (succT (addT (toFolTerm temp qs s
 toFolAtom _ _ t@(Subterm _ _) = unsupportedFile $ "unsupported atom " ++ show t
 toFolAtom _ _ t@(Last _)      = unsupportedFile $ "unsupported atom " ++ show t
 toFolAtom _ _ (Syntactic s) = error $ "unexpected syntactic sugar: " ++ show s
-
--- TODO test literals name escaping
 
 toFolTerm :: PVar v => TempTranslation -> PVarCtx v -> VTerm Name v -> FolTerm
 toFolTerm temp _ (LIT (Con (Name tag id)))
@@ -1082,8 +1107,13 @@ toFolTerm temp _ (LIT (Con (Name tag id)))
      NatName   -> folApp (FolFuncStringLiteral id FolSortNat     ) []
 -- toFolTerm _ _ (LIT (Con c)) = error $ "unexpected literal constant: " ++ show c
 toFolTerm temp qs (LIT (Var v)) = varFromContext temp qs v
-toFolTerm temp qs (FAPP f ts)
+toFolTerm temp qs (FAPP f ts) 
   = case f of
-      AC _ -> let op l r = folApp (MsgSymbol f) [l, r]
+      AC _ -> let op l r = folApp (FolFuncMsg f) [l, r]
               in foldl1 op (toFolTerm temp qs <$> ts)
-      _    -> folApp (MsgSymbol f) (toFolTerm temp qs <$> ts)
+      _    -> folApp (FolFuncMsg f) (toFolTerm temp qs <$> ts)
+-- toFolTerm temp qs (FAPP f ts)
+--   = case f of
+--       AC _ -> let op l r = folApp (MsgSymbol f) [l, r]
+--               in foldl1 op (toFolTerm temp qs <$> ts)
+--       _    -> folApp (MsgSymbol f) (toFolTerm temp qs <$> ts)
