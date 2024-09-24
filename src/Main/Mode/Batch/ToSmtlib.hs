@@ -260,7 +260,7 @@ instance ToSmt FolFuncId where
   toSmt = pretty . identToStr . folFuncName
 
 instance ToSmt FolTerm where
-  toSmt (FolVar (v, _)) = pretty $ identToStr $ FolIdentUserVar v 
+  toSmt (FolVar (v, _)) = pretty $ identToStr v 
   toSmt (FolApp f []) = toSmt f
   toSmt (FolApp f ts) = parens $ toSmt f <+> align (hsep $ fmap toSmt ts)
 
@@ -297,8 +297,7 @@ instance ToSmt FolFormula where
 
   toSmt f@(FolQua q _ _) = parens $ hsep [toSmt q, qvars, toSmt f']
     where (vs, f') = collectQPrefix q f
-          qvars = parens $ align $ vsep [ parens $ hsep [toSmt' v, toSmt s] | (v, s) <- vs ]
-          toSmt' = pretty . identToStr . FolIdentUserVar
+          qvars = parens $ align $ vsep [ parens $ hsep [pretty . identToStr $ v, toSmt s] | (v, s) <- vs ]
 
 instance ToSmt FolRule where
   toSmt (FolRule name _ _ _) =
@@ -430,7 +429,7 @@ instance ToDoc FolFuncId where
   toDoc = pretty . identToStr . folFuncName
 
 instance ToDoc FolTerm where
-  toDoc (FolVar (v, _)) = pretty v
+  toDoc (FolVar (v, _)) = pretty $ identToStr v
   toDoc (FolApp f []) = toDoc f
   toDoc (FolApp f ts) = foldl1 (<>) $
     [ toDoc f, pretty "("]
@@ -455,7 +454,7 @@ instance ToDoc FolFormula where
 
   toDoc (FolConn c s t) = pretty "(" <> toDoc s <+> toDoc c <+> toDoc t <> pretty ")"
 
-  toDoc (FolQua q (v, s) f) = toDoc q <> pretty v <> pretty ":" <+> toDoc s <> pretty "(" <> toDoc f <> pretty ")"
+  toDoc (FolQua q (v, s) f) = toDoc q <> pretty (identToStr v) <> pretty ":" <+> toDoc s <> pretty "(" <> toDoc f <> pretty ")"
 
 instance ToDoc FolGoal where
   toDoc (FolGoal name formula tq) =
@@ -553,9 +552,9 @@ folAssumptions (FolProblem _name temp rules rs _ msgSyms eq) =
             | fun@(FolFuncMsg s) <- fmap FolFuncMsg msgSyms
             , msgFuncIdPrivacy s == Public
             , let arity = folFuncArity fun
-            , let xs = [ FolVar ("x" ++ show i, FolSortMsg) | i <- [1 .. arity] ] ]
-      where x  = FolVar ("x", FolSortMsg)
-            fr = FolVar ("fr", FolSortNat)
+            , let xs = [ FolVar (FolIdentTranslationBuiltin $ "x" ++ show i, FolSortMsg) | i <- [1 .. arity] ] ]
+      where x  = FolVar (FolIdentTranslationBuiltin "m", FolSortMsg)
+            fr = FolVar (FolIdentTranslationBuiltin "fr", FolSortNat)
 
     factIn    x = folApp (FolFuncFact FolFactIn   ) [msgToClass x]
     factOut   x = folApp (FolFuncFact FolFactOut  ) [msgToClass x]
@@ -568,32 +567,32 @@ folAssumptions (FolProblem _name temp rules rs _ msgSyms eq) =
     addDef :: FolFormula
     addDef = FolConnMultiline And [ allQ [x   ] ( addT x zeroT     ~~ x)
                                   , allQ [x, y] ( addT x (succT y) ~~ succT (addT x y))   ]
-      where x = FolVar ("x", FolSortNat)
-            y = FolVar ("y", FolSortNat)
+      where x = FolVar (FolIdentTranslationBuiltin "x", FolSortNat)
+            y = FolVar (FolIdentTranslationBuiltin "y", FolSortNat)
 
     startCondition :: FolFormula
     startCondition = mlConj [
                          allQ [fl] (stateT fl startTime ~~ zeroT)
                        , allQ [fp] (FolNot $ stateP fp startTime)
                        ]
-                       where fl  = FolVar ("f",FolSortLin)
-                             fp  = FolVar ("f",FolSortPer)
+                       where fl  = FolVar (FolIdentTranslationBuiltin "f",FolSortLin)
+                             fp  = FolVar (FolIdentTranslationBuiltin "f",FolSortPer)
 
-    x_l = FolVar ("l", FolSortLin)
-    x_p = FolVar ("p", FolSortPer)
-    x_a = FolVar ("a", FolSortAct)
+    x_l = FolVar (FolIdentTranslationBuiltin "l", FolSortLin)
+    x_p = FolVar (FolIdentTranslationBuiltin "p", FolSortPer)
+    x_a = FolVar (FolIdentTranslationBuiltin "a", FolSortAct)
 
     eqClassSurj :: FolFormula
     eqClassSurj = allQ [c] $ exQ [m] $ msgToClass m ~~ c
-      where c = FolVar ("c", FolSortMsgClass)
-            m = FolVar ("m", FolSortMsg)
+      where c = FolVar (FolIdentTranslationBuiltin "c", FolSortMsgClass)
+            m = FolVar (FolIdentTranslationBuiltin "m", FolSortMsg)
 
     transitionRelation :: FolFormula
     transitionRelation = allQ [t] $ mlDisj [ end t, ruleTransition, freshness]
-       where t = FolVar ("t", tempSort temp)
-             t2 = FolVar ("t2", tempSort temp)
-             r = FolVar ("r", FolSortRule)
-             n = FolVar ("n", FolSortNat)
+       where t = FolVar (FolIdentTranslationBuiltin "t", tempSort temp)
+             t2 = FolVar (FolIdentTranslationBuiltin "t2", tempSort temp)
+             r = FolVar (FolIdentTranslationBuiltin "r", FolSortRule)
+             n = FolVar (FolIdentTranslationBuiltin "n", FolSortNat)
              end x = FolAtom $ folApp (End temp) [x]
              ruleTransition = exQ [r] $ mlConj [
                  allQ [x_l] (exQ [n] ((stateT x_l t    ~~ addT n (preT r x_l) )
@@ -610,7 +609,7 @@ folAssumptions (FolProblem _name temp rules rs _ msgSyms eq) =
                , allQ [x_a] (neg (labP x_a (tempSucc t)))
                ]
              leqT x y = exQ [diff] (addT x diff ~~ y)
-               where diff = FolVar ("diff", tempSort temp)
+               where diff = FolVar (FolIdentTranslationBuiltin "diff", tempSort temp)
              freshN = factFresh (freshVarT n)
 
     translateRule :: FolRule -> FolFormula
@@ -625,10 +624,10 @@ folAssumptions (FolProblem _name temp rules rs _ msgSyms eq) =
       where
         defPredAsDisj p items srt =
           allQ [f] (p (ruleT rule) f <~> disj [ x ~~ f | x <- items ])
-            where f = FolVar ("x_v", srt)
+            where f = FolVar (FolIdentTranslationBuiltin "x", srt)
         defFunAsSumOfLinearFacts fun items =
           allQ [f] (fun (ruleT rule) f ~~ sumT [ equalsT x f | x <- linear items ])
-            where f = FolVar ("f_v", FolSortLin)
+            where f = FolVar (FolIdentTranslationBuiltin "x", FolSortLin)
         facts mult s = [ f | f <- s
                            , factTermMultiplicity f == mult ]
         factTermMultiplicity (FolApp (FolFuncFact tag) _args)  = folFactTagMultiplicity tag
@@ -748,7 +747,7 @@ mlDisj = FolConnMultiline Or
 disj :: [FolFormula] -> FolFormula
 disj = aggregate (FolBool False) (\/)
 
-type FolVar = (String, FolSort)
+type FolVar = (FolIdent, FolSort)
 
 ruleVars :: FolRule -> [FolVar]
 ruleVars (FolRule _ ls as rs) = uniq $ (ls ++ as ++ rs) >>= varList
@@ -907,12 +906,12 @@ toFolProblem temp th
                   "natural-numbers" -> natNum
                   _ -> error $ "unsupported builtin: " ++ str)
          where
-           x = FolVar ("x", FolSortMsg)
-           y = FolVar ("y", FolSortMsg)
-           z = FolVar ("z", FolSortMsg)
+           x = FolVar (FolIdentTranslationBuiltin "x", FolSortMsg)
+           y = FolVar (FolIdentTranslationBuiltin "y", FolSortMsg)
+           z = FolVar (FolIdentTranslationBuiltin "z", FolSortMsg)
 
-           sk = FolVar ("sk", FolSortMsg)
-           m = FolVar ("m", FolSortMsg)
+           sk = FolVar (FolIdentTranslationBuiltin "sk", FolSortMsg)
+           m = FolVar (FolIdentTranslationBuiltin "m", FolSortMsg)
            pk l = folApp (FolFuncMsg (NoEq pkSym)) [l]
            true = folApp (FolFuncMsg (NoEq trueSym)) []
 
@@ -937,7 +936,7 @@ toFolProblem temp th
 
 
            sym = [ sdec (senc m k) k ~~~ m ]
-             where k = FolVar ("k", FolSortMsg)
+             where k = FolVar (FolIdentTranslationBuiltin "k", FolSortMsg)
                    sdec = fun2 (FolFuncMsg (NoEq sdecSym))
                    senc = fun2 (FolFuncMsg (NoEq sencSym))
 
@@ -959,8 +958,8 @@ toFolProblem temp th
              , em (pmult x p) q    ~~~ pmult x (em q p)
              ]
              where
-               p = FolVar ("p", FolSortMsg)
-               q = FolVar ("q", FolSortMsg)
+               p = FolVar (FolIdentTranslationBuiltin "p", FolSortMsg)
+               q = FolVar (FolIdentTranslationBuiltin "q", FolSortMsg)
                pmult = fun2 (FolFuncMsg (NoEq pmultSym))
                em = fun2 (FolFuncMsg (C EMap))
 
@@ -986,9 +985,9 @@ toFolProblem temp th
              where
                nat t = folApp FolFuncVarNat [t]
                (%+) = fun2 (FolFuncMsg (AC NatPlus))
-               n = FolVar ("n", FolSortNat)
-               m = FolVar ("m", FolSortNat)
-               o = FolVar ("o", FolSortNat)
+               n = FolVar (FolIdentTranslationBuiltin "n", FolSortNat)
+               m = FolVar (FolIdentTranslationBuiltin "m", FolSortNat)
+               o = FolVar (FolIdentTranslationBuiltin "o", FolSortNat)
 
 
 universalClosure :: FolFormula -> FolFormula
@@ -1024,7 +1023,7 @@ toFolFormula temp qs (Ato a) = toFolAtom temp qs a
 toFolFormula _ _ (TF x) = FolBool x
 toFolFormula temp qs (Not x) = FolNot (toFolFormula temp qs x)
 toFolFormula temp qs (Conn c l r) = FolConn c (toFolFormula temp qs l) (toFolFormula temp qs r)
-toFolFormula temp qs (Qua q (v,s) f) = FolQua q (v, s') (toFolFormula temp ((v, s):qs) f)
+toFolFormula temp qs (Qua q (v,s) f) = FolQua q (FolIdentUserVar v, s') (toFolFormula temp ((v, s):qs) f)
   where s' = toFolSort temp s
 
 toFolSort :: TempTranslation -> LSort -> FolSort
@@ -1051,10 +1050,10 @@ instance PVar (BVar LVar) where
 lvarToFolVar :: TempTranslation -> (String, LSort) -> FolTerm
 lvarToFolVar temp (name, sort) =
      case sort of
-        LSortPub   -> folApp FolFuncVarPub   [FolVar (name, FolSortNat)]
-        LSortFresh -> folApp FolFuncVarFresh [FolVar (name, FolSortNat)]
-        LSortNat   -> folApp FolFuncVarNat   [FolVar (name, FolSortNat)]
-        _   -> FolVar (name, toFolSort temp sort)
+        LSortPub   -> folApp FolFuncVarPub   [FolVar (FolIdentUserVar name, FolSortNat)]
+        LSortFresh -> folApp FolFuncVarFresh [FolVar (FolIdentUserVar name, FolSortNat)]
+        LSortNat   -> folApp FolFuncVarNat   [FolVar (FolIdentUserVar name, FolSortNat)]
+        _   -> FolVar (FolIdentUserVar name, toFolSort temp sort)
 
 instance PVar LVar where
   type PVarCtx LVar = ()
@@ -1101,7 +1100,7 @@ toFolAtom temp qs (EqE s t) = case sortOf s' of
          t' = toFolTerm temp qs t
 toFolAtom TempAbstract qs (Less s t) = FolAtom $ folApp FolTempLess $ toFolTerm TempAbstract qs <$> [s,t]
 toFolAtom temp@TempNat qs (Less s t) = exQ [d] (succT (addT (toFolTerm temp qs s) d)  ~~ toFolTerm temp qs t)
-  where d = FolVar ("d_", FolSortNat)
+  where d = FolVar (FolIdentTranslationBuiltin "d", FolSortNat)
         addT  = fun2 FolNatAdd
         succT = fun1 FolNatSucc
 toFolAtom _ _ t@(Subterm _ _) = unsupportedFile $ "unsupported atom " ++ show t
