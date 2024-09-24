@@ -202,7 +202,8 @@ data FolFormula =
   deriving (Show)
 
 data FolProblem = FolProblem {
-    _fpTemp    :: TempTranslation
+    _fpName    :: String
+  , _fpTemp    :: TempTranslation
   , _fpRules   :: [FolRule]
   , _fpRestr   :: [FolRestriction]
   , _fpGoal    :: FolGoal
@@ -377,12 +378,12 @@ instance ToSmt FolSignature where
                 [ pretty ";-" <+>  toSmt s <> pretty ":" <+> sortDescription s ] 
              ++ [ ctorEntry f i j | (f, j) <- zip ctors [0..]]
                where ctors = filter isConstructor $ filter (\f -> folFuncDom f == s) funcs
-           ctorEntry f i j  = parH $ [ toSmt f ] ++ [ parH [dtor i j k, toSmt a]  | (a,k) <- zip as [0..] ]
+           ctorEntry f i j  = parH $ [ toSmt f ] ++ [ parH [dtor f i j k, toSmt a]  | (a,k) <- zip as [0..] ]
              where (as, _) = folFuncSig f
                    -- dtor i j  = toSmt f <> pretty "_" <> pretty (i::Int)
-                   dtor i j k = pretty "dtor_" <> pretty (i::Int) 
-                                 <> pretty "_" <> pretty (j::Int)
-                                 <> pretty "_" <> pretty (k::Int)
+                   dtor f i j k = pretty "un" <> toSmt f <> pretty userChar <> pretty (k::Int)
+                                 -- <> pretty "_" <> pretty (j::Int)
+                                 -- <> pretty "_" <> pretty (k::Int)
 
 
 
@@ -398,7 +399,8 @@ instance ToSmt FolSignature where
 
 instance ToSmt FolProblem where
   toSmt p = vcat $ intersperse emptyDoc
-     [ smtItem "set-logic" [ pretty "UFDT" ]
+     [ pretty ";-" <+> pretty "Problem:" <+> pretty (_fpName p)
+     , smtItem "set-logic" [ pretty "UFDT" ]
      , toSmt (folSignature p)
      , vcat $ intersperse emptyDoc (assm <$> folAssumptions p)
      , vsep [ titleComment "goal" gName
@@ -529,12 +531,13 @@ folSignature p = FolSignature (uniq $ forms >>= sorts) (uniq $ forms >>= funcs)
         funcs' (FolApp fid fs) = fid : (funcs' =<< fs)
 
 folAssumptions :: FolProblem -> [(Doc ann, FolFormula)]
-folAssumptions (FolProblem temp rules rs _ msgSyms eq) =
+folAssumptions (FolProblem _name temp rules rs _ msgSyms eq) =
      [ (toDoc r, translateRule r) | r <- rules ++ mdRules ]
   ++ [ (pretty "start condition", startCondition)
      , (pretty "transition relation", transitionRelation)
      , (pretty "addition definition", addDef)
      ]
+  ++ [ (pretty "equivalence class surjectivity:", eqClassSurj) ]
   ++ [ (pretty "equation theory:", mlConj eq) ]
   ++ [ (pretty $ "restriction " ++ r, f) | (FolRestriction r f) <- rs ]
   where
@@ -579,6 +582,11 @@ folAssumptions (FolProblem temp rules rs _ msgSyms eq) =
     x_l = FolVar ("l", FolSortLin)
     x_p = FolVar ("p", FolSortPer)
     x_a = FolVar ("a", FolSortAct)
+
+    eqClassSurj :: FolFormula
+    eqClassSurj = allQ [c] $ exQ [m] $ msgToClass m ~~ c
+      where c = FolVar ("c", FolSortMsgClass)
+            m = FolVar ("m", FolSortMsg)
 
     transitionRelation :: FolFormula
     transitionRelation = allQ [t] $ mlDisj [ end t, ruleTransition, freshness]
@@ -687,7 +695,7 @@ folAssumptions (FolProblem temp rules rs _ msgSyms eq) =
                    TempNat -> zeroT
 
 folGoal :: FolProblem -> (Doc ann, FolFormula, TraceQuantifier)
-folGoal (FolProblem _ _ _ (FolGoal name form tq) _ _) = (pretty name, form, tq)
+folGoal (FolProblem _ _ _ _ (FolGoal name form tq) _ _) = (pretty name, form, tq)
 
 
 outputSmt :: ToSmt a => a -> IO ()
@@ -871,7 +879,9 @@ fun3 f a0 a1 a2 = folApp f [a0, a1, a2]
 
 toFolProblem :: TempTranslation -> OpenTheory -> [FolProblem]
 toFolProblem temp th
-  = fmap (\goal -> FolProblem temp
+  = fmap (\goal -> FolProblem 
+               (_thyName th)
+               temp
                (toFolRules temp $ _thyItems th)
                (mapMaybe (toFolRestriction temp) $ _thyItems th)
                goal 
