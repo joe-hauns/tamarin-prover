@@ -116,8 +116,14 @@ run thisMode as
       liftIO $ createDirectoryIfMissing True oArg
       case thy of 
         Left t -> liftIO $ do
-          forM_ (zip [0::Int ..] (toFolProblem TempNat t)) $ \(i,p) -> do
-            let fname = oArg </> show i ++ ".smt2"
+          let translations = [ x | temp <- [TempNat, TempAbstract]
+                                 , let prefix = case temp of 
+                                                  TempNat -> "nat"
+                                                  TempAbstract -> "temp"
+                                 , let names = [ prefix ++ show i | i  <- [0::Int ..]]
+                                 , x <- zip (toFolProblem temp t)  names ]
+          forM_ translations $ \(p, name) -> do
+            let fname = oArg </> name ++ ".smt2"
             putStrLn $ "writing: " ++ fname
             liftIO $ writeFile fname (show $ toSmt p)
         Right _diffThy -> error "translation of diff theory is not supported (yet)"

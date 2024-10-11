@@ -251,7 +251,7 @@ sortDescription :: FolSort -> Doc ann
 sortDescription (FolSortMsg FolMsgTypeInd ) = pretty "message term algebra"
 sortDescription (FolSortMsg FolMsgTypeModE) = pretty "message equivalence classes modulo E"
 sortDescription FolSortNat = pretty "natural numbers"
-sortDescription FolSortTemp = pretty "abstract time point datatype (debugging purpose of the translation only)"
+sortDescription FolSortTemp = pretty "abstract time point datatype"
 sortDescription FolSortBool = pretty "built-in bool sort"
 sortDescription FolSortRule = pretty "rule sort"
 sortDescription FolSortLin = pretty "linear facts"
@@ -553,8 +553,27 @@ folAssumptions (FolProblem _name temp rules rs _ msgSyms eqs) =
   ++ [ (pretty "start condition", startCondition)
      , (pretty "transition relation", transitionRelation)
      , (pretty "addition definition", addDef)
+     , (pretty "equals definition", 
+        let x = FolVar (FolIdentTranslationBuiltin "x", FolSortLin)
+            y = FolVar (FolIdentTranslationBuiltin "y", FolSortLin)
+        in allQ [x,y] (mlConj [ equalsT x x ~~ oneT 
+                              , x ~/~ y ~> equalsT x y ~~ zeroT]))
      ]
-  ++ [ (pretty $ "message surjectivity", eqClassSurj) ]
+  ++ (case temp of 
+           TempAbstract -> [ (pretty "less definition", 
+             let x = FolVar (FolIdentTranslationBuiltin "x", FolSortTemp)
+                 y = FolVar (FolIdentTranslationBuiltin "y", FolSortTemp)
+                 (<) l r = FolAtom $ folApp FolTempLess [l, r]
+                 zero = folApp FolFuncTempZero []
+                 s x = folApp FolFuncTempSucc [x]
+             in allQ [x,y] $ mlConj [
+                 (zero < s x) <~> FolBool True
+               , (x < zero) <~> FolBool False
+               , (s x < s y) <~> (x < y)
+             ])  ]
+           _ -> [  ]
+     )
+  ++ [ (pretty "message surjectivity", eqClassSurj) ]
   ++ [ (pretty "equation theory", 
          (allQ [m0, m1] (m0 ~~~ m1 <~> mlDisj (
                      [ exQ xs $ mlConj [m0 ~~~ t, m1 ~~~ t] | (fModE, _) <- allMsgSyms 
@@ -655,7 +674,9 @@ folAssumptions (FolProblem _name temp rules rs _ msgSyms eqs) =
                , allQ [x_l] (( x_l ~/~ freshN ) ~> (stateT x_l (tempSucc t) ~~ stateT x_l t))
                , allQ [x_a] (neg (labP x_a (tempSucc t)))
                ]
-             leqT x y = exQ [diff] (addT x diff ~~ y)
+             leqT x y = case temp of
+                          TempNat      -> exQ [diff] (addT x diff ~~ y)
+                          TempAbstract -> FolAtom (folApp FolTempLess [x, y])
                where diff = FolVar (FolIdentTranslationBuiltin "diff", tempSort temp)
              freshN = factFresh (freshVarT n)
 
@@ -850,7 +871,7 @@ folFuncTuple (FolFuncVar msgTy varTy) = (folMsgTypeWrapIdent msgTy $ ident varTy
         ident FolVarNat   = FolIdentTranslationBuiltin "nat"
 folFuncTuple (FolFuncState temp) = (FolIdentTranslationBuiltin "state", [FolSortLin, tempSort temp], FolSortNat)
 folFuncTuple (FolPredState temp) = (FolIdentTranslationBuiltin "State", [FolSortPer, tempSort temp], FolSortBool)
-folFuncTuple (FolPredLab temp) = (FolIdentTranslationBuiltin "Lab", [FolSortAct, tempSort temp], FolSortBool)
+folFuncTuple (FolPredLab temp) = (FolIdentTranslationBuiltin "Label", [FolSortAct, tempSort temp], FolSortBool)
 folFuncTuple FolFuncTempSucc = (FolIdentTranslationBuiltin "t+1", [FolSortTemp], FolSortTemp)
 folFuncTuple FolFuncTempZero = (FolIdentTranslationBuiltin "t0", [], FolSortTemp)
 folFuncTuple (FolFuncStringLiteral n srt) = (FolIdentUserLiteral $ getNameId n, [], srt)
@@ -918,6 +939,7 @@ infixl 3 \/
 infixl 2 <~>
 infixl 2 ~>
 infix 5 ~~~
+infix 5 ~/~
 
 -- TODO remove
 (~~~) :: FolTerm -> FolTerm -> FolFormula
