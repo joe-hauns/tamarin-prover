@@ -549,8 +549,7 @@ folSignature p = FolSignature (uniq $ forms >>= sorts) (uniq $ forms >>= funcs)
 
 folAssumptions :: FolProblem -> [(Doc ann, FolFormula)]
 folAssumptions (FolProblem _name temp rules rs _ msgSyms eqs) =
-     [ (toDoc r, translateRule r) | r <- rules ++ mdRules ]
-  ++ [ (pretty "start condition", startCondition)
+     [ (pretty "start condition", startCondition)
      , (pretty "transition relation", transitionRelation)
      , (pretty "addition definition", addDef)
      , (pretty "equals definition", 
@@ -586,6 +585,7 @@ folAssumptions (FolProblem _name temp rules rs _ msgSyms eqs) =
        ) 
   ]
   ++ [ (pretty $ "inductivity link", indLink) ]
+  ++ [ (toDoc r, translateRule r) | r <- rules ++ mdRules ]
   ++ [ (pretty $ "restriction " ++ r, f) | (FolRestriction r f) <- rs ]
   where
     mdRules :: [FolRule]
@@ -615,7 +615,6 @@ folAssumptions (FolProblem _name temp rules rs _ msgSyms eqs) =
     freshVarT x = folApp (FolFuncVar FolMsgTypeModE FolVarFresh) [x]
     pubVarT x   = folApp (FolFuncVar FolMsgTypeModE FolVarPub) [x]
 
-    (-:) l r = FolVar (FolIdentTranslationBuiltin l, r)
     addDef :: FolFormula
     addDef = FolConnMultiline And [ allQ [x   ] ( addT x zeroT     ~~ x)
                                   , allQ [x, y] ( addT x (succT y) ~~ succT (addT x y))   ]
@@ -629,6 +628,7 @@ folAssumptions (FolProblem _name temp rules rs _ msgSyms eqs) =
                        ]
                        where fl  = FolVar (FolIdentTranslationBuiltin "f",FolSortLin)
                              fp  = FolVar (FolIdentTranslationBuiltin "f",FolSortPer)
+
 
     x_l = FolVar (FolIdentTranslationBuiltin "l", FolSortLin)
     x_p = FolVar (FolIdentTranslationBuiltin "p", FolSortPer)
@@ -654,17 +654,18 @@ folAssumptions (FolProblem _name temp rules rs _ msgSyms eqs) =
       where m = FolVar (FolIdentTranslationBuiltin "m", folSortMsgModE)
 
     transitionRelation :: FolFormula
-    transitionRelation = allQ [t] $ mlDisj [ end t, ruleTransition, freshness]
+    transitionRelation = allQ [t] $ mlDisj [ leqT (endT temp) t, ruleTransition, freshness]
        where t = FolVar (FolIdentTranslationBuiltin "t", tempSort temp)
              t2 = FolVar (FolIdentTranslationBuiltin "t2", tempSort temp)
              r = FolVar (FolIdentTranslationBuiltin "r", FolSortRule)
              n = FolVar (FolIdentTranslationBuiltin "n", FolSortNat)
-             end x = FolAtom $ folApp (End temp) [x]
              ruleTransition = exQ [r] $ mlConj [
-                 allQ [x_l] (exQ [n] ((stateT x_l t    ~~ addT n (preT r x_l) )
-                                   /\ (stateT x_l (tempSucc t) ~~ addT n (conT r x_l) )))
-               , allQ [x_p] (( preP r x_p ~> stateP x_p t )
-                         /\ ( stateP x_p (tempSucc t) <~> ( stateP x_p t \/ conP r x_p) ))
+                 allQ [x_l] (exQ [n] (mlConj [ 
+                                     stateT x_l t    ~~ addT n (preT r x_l)
+                                   , stateT x_l (tempSucc t) ~~ addT n (conT r x_l) ]))
+               , allQ [x_p] $ mlConj [
+                            preP r x_p ~> stateP x_p t
+                         ,  stateP x_p (tempSucc t) <~> ( stateP x_p t \/ conP r x_p) ]
                , allQ [x_a] ( labP x_a t <~> actP r x_a)
                ]
              freshness = exQ [n] $ mlConj [
@@ -672,11 +673,11 @@ folAssumptions (FolProblem _name temp rules rs _ msgSyms eqs) =
                , stateT freshN (tempSucc t) ~~ oneT
                , allQ [x_p] (stateP x_p (tempSucc t) <~> stateP x_p t)
                , allQ [x_l] (( x_l ~/~ freshN ) ~> (stateT x_l (tempSucc t) ~~ stateT x_l t))
-               , allQ [x_a] (neg (labP x_a (tempSucc t)))
+               , allQ [x_a] (neg (labP x_a t))
                ]
              leqT x y = case temp of
                           TempNat      -> exQ [diff] (addT x diff ~~ y)
-                          TempAbstract -> FolAtom (folApp FolTempLess [x, y])
+                          TempAbstract -> mlDisj [FolAtom (folApp FolTempLess [x, y]), x ~~ y]
                where diff = FolVar (FolIdentTranslationBuiltin "diff", tempSort temp)
              freshN = factFresh (freshVarT n)
 
@@ -845,7 +846,7 @@ folFactTagName FolFactKnown = "K"
 folFactTagName FolFactKU    = "KU"
 
 folFuncTuple :: FolFuncId -> (FolIdent, [FolSort], FolSort)
-folFuncTuple (End temp) = (FolIdentTranslationBuiltin "end", [tempSort temp], FolSortBool)
+folFuncTuple (End temp) = (FolIdentTranslationBuiltin "end", [], tempSort temp)
 folFuncTuple (FolFuncMsg ty s) = (msgFuncIdName ty s, [msgSort | _ <- [1..msgFuncIdArity s]], msgSort)
   where msgSort = msgTypeToSort ty
 folFuncTuple FolFuncMsgToClass = (FolIdentTranslationBuiltin "class", [folSortMsgInd], folSortMsgModE)
@@ -1105,8 +1106,23 @@ toFolFormula temp qs (Ato a) = toFolAtom temp qs a
 toFolFormula _ _ (TF x) = FolBool x
 toFolFormula temp qs (Not x) = FolNot (toFolFormula temp qs x)
 toFolFormula temp qs (Conn c l r) = FolConn c (toFolFormula temp qs l) (toFolFormula temp qs r)
-toFolFormula temp qs (Qua q (v,s) f) = FolQua q (FolIdentUserVar v, s') (toFolFormula temp ((v, s):qs) f)
+toFolFormula temp qs (Qua q (v,s) f) = case s of 
+      LSortNode ->  guardedQ q var' (lessT temp (FolVar var') (endT temp)) f'
+      _         ->  FolQua q var' f'
   where s' = toFolSort temp s
+        var' = (FolIdentUserVar v, s')
+        f' = toFolFormula temp ((v, s):qs) f
+
+guardedQ :: Quantifier -> FolVar -> FolFormula -> FolFormula -> FolFormula
+guardedQ All v f1 f2 = FolQua All v (f1 ~> f2)
+guardedQ Ex  v f1 f2 = FolQua Ex  v (f1 /\ f2)
+
+endT temp = folApp (End temp) []
+
+lessT temp x y = case temp of
+            TempNat      -> exQ [diff] (folApp FolNatAdd [x, folApp FolNatSucc [diff]] ~~ y)
+            TempAbstract -> FolAtom (folApp FolTempLess [x, y])
+  where diff = FolVar (FolIdentTranslationBuiltin "diff", tempSort temp)
 
 toFolSort :: TempTranslation -> LSort -> FolSort
 toFolSort _ LSortPub   = FolSortNat
