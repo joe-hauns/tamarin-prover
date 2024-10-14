@@ -654,7 +654,7 @@ folAssumptions (FolProblem _name temp rules rs _ msgSyms eqs) =
       where m = FolVar (FolIdentTranslationBuiltin "m", folSortMsgModE)
 
     transitionRelation :: FolFormula
-    transitionRelation = allQ [t] $ mlDisj [ leqT (endT temp) t, ruleTransition, freshness]
+    transitionRelation = allQ [t] $ mlDisj [ neg $ lessT temp t (endT temp), ruleTransition, freshness]
        where t = FolVar (FolIdentTranslationBuiltin "t", tempSort temp)
              t2 = FolVar (FolIdentTranslationBuiltin "t2", tempSort temp)
              r = FolVar (FolIdentTranslationBuiltin "r", FolSortRule)
