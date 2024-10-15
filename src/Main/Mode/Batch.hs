@@ -115,13 +115,15 @@ run thisMode as
 
       liftIO $ createDirectoryIfMissing True oArg
       case thy of 
-        Left t -> liftIO $ do
+        Left t0 -> liftIO $ do
+
+          let t = addMessageDeductionRuleVariants $ removeTranslationItems t0
           let translations = [ x | temp <- [TempNat, TempAbstract]
                                  , let prefix = case temp of 
                                                   TempNat -> "nat"
                                                   TempAbstract -> "temp"
                                  , let names = [ prefix ++ show i | i  <- [0::Int ..]]
-                                 , x <- zip (toFolProblem temp t)  names ]
+                                 , x <- zip (toFolProblem' temp t)  names ]
           forM_ translations $ \(p, name) -> do
             let fname = oArg </> name ++ ".smt2"
             putStrLn $ "writing: " ++ fname
