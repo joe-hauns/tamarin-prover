@@ -5,8 +5,7 @@
 
 module Main.Mode.Batch.ToSmtlib (
     toSmtlib
-  , toFolProblem -- TODO remove one of these
-  , toFolProblem'
+  , toFolProblem 
   , outputNice
   , outputSmt
   , TempTranslation(..)
@@ -22,7 +21,7 @@ import Theory.Model
 import Control.Exception
 import Data.Maybe
 import Term.Builtin.Signature
-import Data.List (intercalate,genericIndex,intersperse)
+import Data.List (intercalate,genericIndex,intersperse,sortBy,groupBy)
 import Data.Functor
 import qualified Data.ByteString.Char8 as BS
 import Theory
@@ -41,7 +40,7 @@ data FolIdent = FolIdentUserMsg String
               | FolIdentEmap
               | FolIdentTranslationBuiltin String 
               | FolIdentBuiltinRuleFresh
-              | FolIdentBuiltinIntrRule IntrRuleACInfo 
+              | FolIdentBuiltinIntrRule IntrRuleACInfo Int
               | FolIdentInd FolIdent
               | FolIdentEq
               | FolIdentBool
@@ -71,10 +70,10 @@ identToStr (FolIdentAC s) = builtinChar ++ s ++ builtinChar  ++ "ac"
 identToStr FolIdentEmap = builtinChar ++ "emap"
 identToStr FolIdentBuiltinRuleFresh = builtinChar ++ "fresh" ++ builtinChar ++ "r"
 --
-identToStr (FolIdentBuiltinIntrRule rule) = builtinChar ++ intercalate builtinChar ("md":(
+identToStr (FolIdentBuiltinIntrRule rule idx) = builtinChar ++ intercalate builtinChar ("md":(
    case rule of 
     (ConstrRule name) -> ["constr-rule", BS.unpack name]
-    (DestrRule name i b0 b1) -> ["destr-rule", BS.unpack name, show i, show b0, show b1]
+    (DestrRule name _i _b0 _b1) -> ["destr-rule", BS.unpack name, show idx]-- show i, show b0, show b1]
     CoerceRule -> ["coerce"]
     IRecvRule -> ["i-recv"]
     ISendRule -> ["i-send"]
@@ -471,6 +470,7 @@ instance ToDoc FolFuncId where
 
 instance ToDoc FolTerm where
   toDoc (FolVar (v, _)) = pretty $ identToStr v
+  toDoc (FolApp (FolEq _) [l, r]) = toDoc l <+> pretty "=" <+> toDoc r
   toDoc (FolApp f []) = toDoc f
   toDoc (FolApp f ts) = foldl1 (<>) $
     [ toDoc f, pretty "("]
@@ -596,8 +596,9 @@ folAssumptions (FolProblem _name temp rules rs _ msgSyms eqs) =
            _ -> [  ]
      )
   ++ [ (pretty "message surjectivity", eqClassSurj) ]
-  ++ [ (pretty "equation theory", 
-         (allQ [m0, m1] (m0 ~~~ m1 <~> mlDisj (
+  ++ [ (vsep [ pretty "equational theory"
+             , pretty "  " <> align (vcat [ toDoc (l ~~~ r) | (l,r) <- eqs]) ]
+       , (allQ [m0, m1] (m0 ~~~ m1 <~> mlDisj (
                      [ exQ xs $ mlConj [m0 ~~~ t, m1 ~~~ t] | (fModE, _) <- allMsgSyms 
                                                              , let xs = argVars fModE 
                                                              , let t = folApp fModE xs ]
@@ -852,8 +853,8 @@ data FolRule = FolRule {
 class ToFolIdent a where
   toFolIdent :: a -> FolIdent
  
-instance ToFolIdent IntrRuleACInfo where 
-  toFolIdent = FolIdentBuiltinIntrRule
+instance ToFolIdent (IntrRuleACInfo, Int) where 
+  toFolIdent = uncurry FolIdentBuiltinIntrRule
  
 instance ToFolIdent ProtoRuleEInfo where 
   toFolIdent (ProtoRuleEInfo name attr restriction) 
@@ -928,7 +929,6 @@ unsupportedNonEmpty [] _ = True
 unsupportedNonEmpty _ msg = unsupportedFile msg
 
 
-
 toFolRule :: ToFolIdent info => TempTranslation -> Rule info -> FolRule
 toFolRule temp (Rule info prems concs acts _newVars) 
   = FolRule (toFolIdent info)
@@ -968,138 +968,23 @@ fun2 f a0 a1    = folApp f [a0, a1]
 fun3 :: FolFuncId -> FolTerm -> FolTerm -> FolTerm -> FolTerm
 fun3 f a0 a1 a2 = folApp f [a0, a1, a2]
 
-toFolProblem' :: TempTranslation -> OpenTranslatedTheory -> [FolProblem]
-toFolProblem' temp th
-  = fmap (\goal -> FolProblem 
-               (_thyName th)
-               temp
-               ((toFolRules temp $ _thyItems th) ++ (toFolRule temp <$> _thyCache th )) 
-               (mapMaybe (toFolRestriction temp) $ _thyItems th)
-               goal 
-               (Data.Set.toList $ funSyms $ _sigMaudeInfo $ _thySignature th)
-               userEq)
-          (mapMaybe (toFolGoal temp) $ _thyItems th)
-     where
-
-       infix 5 ~~~
-       (~~~) l r = (l,r)
-
-       userEq = fmap (stRuleToFormula temp)
-              $ Data.Set.toList $ stRules
-              $ _sigMaudeInfo $ _thySignature th
-       -- builtinEqs = join [ builtinEq b | TranslationItem (SignatureBuiltin b) <- _thyItems th ]
-
-       stRuleToFormula temp (CtxtStRule lhs (StRhs _pos rhs)) = toFolTerm temp () lhs ~~~ toFolTerm temp () rhs
-
-       builtinEq str = (case str of
-          "hashing" -> []
-          "asymmetric-encryption" -> asym
-          "signing" -> signing
-          "revealing-signing" -> revSigning
-          "symmetric-encryption" -> sym
-          "diffie-hellman" -> dh
-          "bilinear-pairing" -> dh ++ blp
-          "xor" -> xor
-          "multiset" -> multiset
-          -- "natural-numbers" -> natNum
-          _ -> error $ "unsupported builtin: " ++ str)
-         where
-           x = FolVar (FolIdentTranslationBuiltin "x", folSortMsgModE)
-           y = FolVar (FolIdentTranslationBuiltin "y", folSortMsgModE)
-           z = FolVar (FolIdentTranslationBuiltin "z", folSortMsgModE)
-
-           sk = FolVar (FolIdentTranslationBuiltin "sk", folSortMsgModE)
-           m = FolVar (FolIdentTranslationBuiltin "m", folSortMsgModE)
-           pk l = folApp (FolFuncMsg FolMsgTypeModE (NoEq pkSym)) [l]
-           true = folApp (FolFuncMsg FolMsgTypeModE (NoEq trueSym)) []
-
-           asym = [ adec (aenc m (pk sk)) sk ~~~ m ]
-             where
-               adec = fun2 (FolFuncMsg FolMsgTypeModE (NoEq adecSym))
-               aenc = fun2 (FolFuncMsg FolMsgTypeModE (NoEq aencSym))
-
-           signing =  [ verify (sign m sk) m (pk sk) ~~~ true ]
-             where
-               sign = fun2 (FolFuncMsg FolMsgTypeModE (NoEq signSym))
-               verify = fun3 (FolFuncMsg FolMsgTypeModE (NoEq verifySym))
-
-           revSigning =  [
-               revealVerify (revealSign m sk) m (pk sk) ~~~ true
-             , getMessage (revealSign m sk) ~~~ m
-             ]
-             where
-               revealSign = fun2 (FolFuncMsg FolMsgTypeModE (NoEq revealSignSym))
-               revealVerify a0 a1 a2 = folApp (FolFuncMsg FolMsgTypeModE (NoEq revealVerifySym)) [a0, a1, a2]
-               getMessage l = folApp (FolFuncMsg FolMsgTypeModE (NoEq extractMessageSym)) [l]
-
-
-           sym = [ sdec (senc m k) k ~~~ m ]
-             where k = FolVar (FolIdentTranslationBuiltin "k", folSortMsgModE)
-                   sdec = fun2 (FolFuncMsg FolMsgTypeModE (NoEq sdecSym))
-                   senc = fun2 (FolFuncMsg FolMsgTypeModE (NoEq sencSym))
-
-           dh = ac (*) ++ [
-               (x ^ y) ^ z  ~~~ x ^ (y * z)
-             ,  x ^ one     ~~~ x
-             ,  x * one     ~~~ x
-             ,  x * inv x   ~~~ one
-             ]
-           (*) = fun2 (FolFuncMsg FolMsgTypeModE (AC Mult))
-           (^) = fun2 (FolFuncMsg FolMsgTypeModE (NoEq expSym))
-           inv t = folApp (FolFuncMsg FolMsgTypeModE (NoEq invSym)) [t]
-           one = folApp (FolFuncMsg FolMsgTypeModE (NoEq oneSym)) []
-
-           blp = [
-               pmult x (pmult y p) ~~~ pmult (x*y) p
-             , pmult one p         ~~~ p
-             , em p q              ~~~ em q p
-             , em (pmult x p) q    ~~~ pmult x (em q p)
-             ]
-             where
-               p = FolVar (FolIdentTranslationBuiltin "p", folSortMsgModE)
-               q = FolVar (FolIdentTranslationBuiltin "q", folSortMsgModE)
-               pmult = fun2 (FolFuncMsg FolMsgTypeModE (NoEq pmultSym))
-               em = fun2 (FolFuncMsg FolMsgTypeModE (C EMap))
-
-           ac (<>) = [
-                 x <> y        ~~~ y <> x
-               , x <> (y <> z) ~~~ (x <> y) <> z
-             ]
-           xor = ac (<+>) ++ [
-               x <+> zero      ~~~ x
-             , x <+> x         ~~~ zero
-             ]
-           infix 6 <+>
-           (<+>) = fun2 (FolFuncMsg FolMsgTypeModE (AC Xor))
-           zero = folApp (FolFuncMsg FolMsgTypeModE (NoEq zeroSym)) []
-
-           multiset = ac union
-           union = fun2 (FolFuncMsg FolMsgTypeModE (AC Union))
-
-           -- natNum = ac (%+) ++ [
-           --     allQ [n] $ exQ [m,o] $ nat n ~~~ nat m %+ nat o
-           --   , allQ [m,o] $ exQ [n] $ nat n ~~~ nat m %+ nat o
-           --   ]
-           --   where
-           --     nat t = folApp (FolFuncVar FolMsgTypeModE FolVarNat) [t]
-           --     (%+) = fun2 (FolFuncMsg FolMsgTypeModE (AC NatPlus))
-           --     n = FolVar (FolIdentTranslationBuiltin "n", FolSortNat)
-           --     m = FolVar (FolIdentTranslationBuiltin "m", FolSortNat)
-           --     o = FolVar (FolIdentTranslationBuiltin "o", FolSortNat)
-
-
-toFolProblem :: TempTranslation -> OpenTheory -> [FolProblem]
+toFolProblem :: TempTranslation -> OpenTranslatedTheory -> [FolProblem]
 toFolProblem temp th
   = fmap (\goal -> FolProblem 
                (_thyName th)
                temp
-               (toFolRules temp $ _thyItems th)
+               ((toFolRules temp $ _thyItems th) ++ (toFolRule temp <$> builtinRules )) 
                (mapMaybe (toFolRestriction temp) $ _thyItems th)
                goal 
                (Data.Set.toList $ funSyms $ _sigMaudeInfo $ _thySignature th)
                (userEq ++ builtinEqs))
           (mapMaybe (toFolGoal temp) $ _thyItems th)
      where
+       builtinRules = [ Rule (info, i) ls as rs nv
+                    | g <- groupBy (\l r -> _rInfo l == _rInfo r) 
+                         $ sortBy (\l r -> _rInfo l `compare` _rInfo r) 
+                         $ (_thyCache th) 
+                    , (i, Rule info ls as rs nv) <- zip [(0 :: Int)..] g ]
 
        infix 5 ~~~
        (~~~) l r = (l,r)
@@ -1107,23 +992,19 @@ toFolProblem temp th
        userEq = fmap (stRuleToFormula temp)
               $ Data.Set.toList $ stRules
               $ _sigMaudeInfo $ _thySignature th
-       builtinEqs = join [ builtinEq b | TranslationItem (SignatureBuiltin b) <- _thyItems th ]
 
        stRuleToFormula temp (CtxtStRule lhs (StRhs _pos rhs)) = toFolTerm temp () lhs ~~~ toFolTerm temp () rhs
 
-       builtinEq str = (case str of
-          "hashing" -> []
-          "asymmetric-encryption" -> asym
-          "signing" -> signing
-          "revealing-signing" -> revSigning
-          "symmetric-encryption" -> sym
-          "diffie-hellman" -> dh
-          "bilinear-pairing" -> dh ++ blp
-          "xor" -> xor
-          "multiset" -> multiset
-          -- "natural-numbers" -> natNum
-          _ -> error $ "unsupported builtin: " ++ str)
+       builtinEqs = join [
+           if enableDH   sig then dh else []
+         , if enableBP   sig then dh ++ blp else []
+         , if enableMSet sig then multiset else []
+         , if enableXor  sig then xor else []
+         , if enableNat  sig then error "unsupported builtin: natural-numbers" else []
+         ] 
          where
+           sig = _sigMaudeInfo $ _thySignature th
+
            x = FolVar (FolIdentTranslationBuiltin "x", folSortMsgModE)
            y = FolVar (FolIdentTranslationBuiltin "y", folSortMsgModE)
            z = FolVar (FolIdentTranslationBuiltin "z", folSortMsgModE)
@@ -1132,31 +1013,6 @@ toFolProblem temp th
            m = FolVar (FolIdentTranslationBuiltin "m", folSortMsgModE)
            pk l = folApp (FolFuncMsg FolMsgTypeModE (NoEq pkSym)) [l]
            true = folApp (FolFuncMsg FolMsgTypeModE (NoEq trueSym)) []
-
-           asym = [ adec (aenc m (pk sk)) sk ~~~ m ]
-             where
-               adec = fun2 (FolFuncMsg FolMsgTypeModE (NoEq adecSym))
-               aenc = fun2 (FolFuncMsg FolMsgTypeModE (NoEq aencSym))
-
-           signing =  [ verify (sign m sk) m (pk sk) ~~~ true ]
-             where
-               sign = fun2 (FolFuncMsg FolMsgTypeModE (NoEq signSym))
-               verify = fun3 (FolFuncMsg FolMsgTypeModE (NoEq verifySym))
-
-           revSigning =  [
-               revealVerify (revealSign m sk) m (pk sk) ~~~ true
-             , getMessage (revealSign m sk) ~~~ m
-             ]
-             where
-               revealSign = fun2 (FolFuncMsg FolMsgTypeModE (NoEq revealSignSym))
-               revealVerify a0 a1 a2 = folApp (FolFuncMsg FolMsgTypeModE (NoEq revealVerifySym)) [a0, a1, a2]
-               getMessage l = folApp (FolFuncMsg FolMsgTypeModE (NoEq extractMessageSym)) [l]
-
-
-           sym = [ sdec (senc m k) k ~~~ m ]
-             where k = FolVar (FolIdentTranslationBuiltin "k", folSortMsgModE)
-                   sdec = fun2 (FolFuncMsg FolMsgTypeModE (NoEq sdecSym))
-                   senc = fun2 (FolFuncMsg FolMsgTypeModE (NoEq sencSym))
 
            dh = ac (*) ++ [
                (x ^ y) ^ z  ~~~ x ^ (y * z)
@@ -1195,18 +1051,6 @@ toFolProblem temp th
 
            multiset = ac union
            union = fun2 (FolFuncMsg FolMsgTypeModE (AC Union))
-
-           -- natNum = ac (%+) ++ [
-           --     allQ [n] $ exQ [m,o] $ nat n ~~~ nat m %+ nat o
-           --   , allQ [m,o] $ exQ [n] $ nat n ~~~ nat m %+ nat o
-           --   ]
-           --   where
-           --     nat t = folApp (FolFuncVar FolMsgTypeModE FolVarNat) [t]
-           --     (%+) = fun2 (FolFuncMsg FolMsgTypeModE (AC NatPlus))
-           --     n = FolVar (FolIdentTranslationBuiltin "n", FolSortNat)
-           --     m = FolVar (FolIdentTranslationBuiltin "m", FolSortNat)
-           --     o = FolVar (FolIdentTranslationBuiltin "o", FolSortNat)
-
 
 existentialClosure :: FolFormula -> FolFormula
 existentialClosure f = exQ (fmap FolVar $ Data.Set.toList $ freeVars f) f

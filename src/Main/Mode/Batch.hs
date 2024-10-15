@@ -123,7 +123,7 @@ run thisMode as
                                                   TempNat -> "nat"
                                                   TempAbstract -> "temp"
                                  , let names = [ prefix ++ show i | i  <- [0::Int ..]]
-                                 , x <- zip (toFolProblem' temp t)  names ]
+                                 , x <- zip (toFolProblem temp t)  names ]
           forM_ translations $ \(p, name) -> do
             let fname = oArg </> name ++ ".smt2"
             putStrLn $ "writing: " ++ fname
