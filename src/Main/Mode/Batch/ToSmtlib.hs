@@ -23,6 +23,7 @@ import Data.Maybe
 import Term.Builtin.Signature
 import Data.List (intercalate,genericIndex,intersperse,sortBy,groupBy)
 import Data.Functor
+import Debug.Trace
 import qualified Data.ByteString.Char8 as BS
 import Theory
 import Data.Set hiding (filter)
@@ -73,7 +74,7 @@ identToStr FolIdentBuiltinRuleFresh = builtinChar ++ "fresh" ++ builtinChar ++ "
 identToStr (FolIdentBuiltinIntrRule rule idx) = builtinChar ++ intercalate builtinChar ("md":(
    case rule of 
     (ConstrRule name) -> ["constr-rule", BS.unpack name]
-    (DestrRule name _i _b0 _b1) -> ["destr-rule", BS.unpack name, show idx]-- show i, show b0, show b1]
+    (DestrRule name i b0 b1) -> ["destr-rule", BS.unpack name, show i, show b0, show b1, show idx]-- show i, show b0, show b1]
     CoerceRule -> ["coerce"]
     IRecvRule -> ["i-recv"]
     ISendRule -> ["i-send"]
@@ -981,10 +982,12 @@ toFolProblem temp th
           (mapMaybe (toFolGoal temp) $ _thyItems th)
      where
        builtinRules = [ Rule (info, i) ls as rs nv
-                    | g <- groupBy (\l r -> _rInfo l == _rInfo r) 
-                         $ sortBy (\l r -> _rInfo l `compare` _rInfo r) 
-                         $ (_thyCache th) 
-                    , (i, Rule info ls as rs nv) <- zip [(0 :: Int)..] g ]
+                    | let gs = groupBy (\l r -> _rInfo l == _rInfo r) 
+                               $ sortBy (\l r -> _rInfo l `compare` _rInfo r) 
+                               $ (_thyCache th) 
+                    , g <- trace ("grouping: " ++ show [ _rInfo x | g <- gs, x <- g ]) gs
+                    , (i, Rule info ls as rs nv) <- zip [(0 :: Int)..] g 
+                    ]
 
        infix 5 ~~~
        (~~~) l r = (l,r)
