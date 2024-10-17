@@ -866,7 +866,7 @@ instance ToFolIdent ProtoRuleEInfo where
                     StandRule r -> FolIdentUserRule $ r
 
 folFactTagName :: FolFactTag -> String
-folFactTagName (FolFactUser _ name _) = name
+folFactTagName (FolFactUser multi name arity) = (case multi of Persistent -> "!"; Linear -> "") ++ name ++ "/" ++ show arity
 folFactTagName FolFactFresh = "Fr"
 folFactTagName FolFactOut   = "Out"
 folFactTagName FolFactIn    = "In"
@@ -1091,8 +1091,7 @@ toFolFormula temp qs (Conn c l r) = FolConn c (toFolFormula temp qs l) (toFolFor
 toFolFormula temp qs (Qua q (v,s) f) = case s of 
       LSortNode ->  guardedQ q var' (lessT temp (FolVar var') (endT temp)) f'
       _         ->  FolQua q var' f'
-  where s' = toFolSort temp s
-        var' = (FolIdentUserVar v, s')
+  where var' = (varName s v, toFolSort temp s)
         f' = toFolFormula temp ((v, s):qs) f
 
 guardedQ :: Quantifier -> FolVar -> FolFormula -> FolFormula -> FolFormula
@@ -1127,13 +1126,28 @@ instance PVar (BVar LVar) where
           
   varFromContext temp _ (Free v) = varFromContext temp () v
 
+-- varName :: FolVarType -> String -> FolIdent
+-- varName FolVarPub   name = FolIdentUserVar $ "$" ++ name
+-- varName FolVarFresh name = FolIdentUserVar $ "~" ++ name
+-- varName FolVarNat   name = FolIdentUserVar $ "%" ++ name
+
+varName :: LSort -> String -> FolIdent
+varName sort name = FolIdentUserVar $ (pref sort) ++ name
+  where pref LSortPub   = "$"
+        pref LSortFresh = "~"
+        pref LSortNat   = "%"
+        pref LSortNode  = "#"
+        pref LSortMsg   = ""
+
+
 lvarToFolVar :: TempTranslation -> (String, LSort) -> FolTerm
-lvarToFolVar temp (name, sort) =
-     case sort of
-        LSortPub   -> folApp (FolFuncVar FolMsgTypeModE FolVarPub)   [FolVar (FolIdentUserVar name, FolSortNat)]
-        LSortFresh -> folApp (FolFuncVar FolMsgTypeModE FolVarFresh) [FolVar (FolIdentUserVar name, FolSortNat)]
-        LSortNat   -> folApp (FolFuncVar FolMsgTypeModE FolVarNat)   [FolVar (FolIdentUserVar name, FolSortNat)]
-        _   -> FolVar (FolIdentUserVar name, toFolSort temp sort)
+lvarToFolVar temp (name, sort) = wrapper sort $ FolVar (varName sort name, toFolSort temp sort)
+  where wrapper LSortPub   = msgSubTypeWrapper FolVarPub
+        wrapper LSortFresh = msgSubTypeWrapper FolVarFresh
+        wrapper LSortNat   = msgSubTypeWrapper FolVarNat
+        wrapper LSortMsg   = id
+        wrapper LSortNode  = id
+        msgSubTypeWrapper ty x = folApp (FolFuncVar FolMsgTypeModE ty) [x]
 
 instance PVar LVar where
   type PVarCtx LVar = ()
