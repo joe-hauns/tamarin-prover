@@ -985,7 +985,7 @@ toFolProblem temp th
                     | let gs = groupBy (\l r -> _rInfo l == _rInfo r) 
                                $ sortBy (\l r -> _rInfo l `compare` _rInfo r) 
                                $ (_thyCache th) 
-                    , g <- trace ("grouping: " ++ show [ _rInfo x | g <- gs, x <- g ]) gs
+                    , g <- gs
                     , (i, Rule info ls as rs nv) <- zip [(0 :: Int)..] g 
                     ]
 
@@ -1125,11 +1125,6 @@ instance PVar (BVar LVar) where
     where v = qs `genericIndex` deBrujinIdx
           
   varFromContext temp _ (Free v) = varFromContext temp () v
-
--- varName :: FolVarType -> String -> FolIdent
--- varName FolVarPub   name = FolIdentUserVar $ "$" ++ name
--- varName FolVarFresh name = FolIdentUserVar $ "~" ++ name
--- varName FolVarNat   name = FolIdentUserVar $ "%" ++ name
 
 varName :: LSort -> String -> FolIdent
 varName sort name = FolIdentUserVar $ (pref sort) ++ name
